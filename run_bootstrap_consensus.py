@@ -6,8 +6,8 @@ from tqdm import tqdm
 import os
 import matplotlib.pyplot as plt
 
-from causal_graphs.evaluation.graph_utils import load_ground_truth
-from causal_graphs.evaluation.metrics import calculate_metrics, get_adj_matrix
+from whydra.evaluation.graph_utils import load_ground_truth
+from whydra.evaluation.metrics import calculate_metrics, get_adj_matrix
 
 # Импорты causal-learn
 from causallearn.graph.GraphNode import GraphNode

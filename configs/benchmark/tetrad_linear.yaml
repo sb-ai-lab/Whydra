@@ -1,5 +1,5 @@
 loader:
-  _target_: causal_graphs.data.loaders.TetradLoader
+  _target_: whydra.data.loaders.TetradLoader
   # Путь к папке, где лежат data_linear_*.txt
   data_dir: "./datasets/Tetrad"
   # Путь к папке Ground truth внутри Tetrad

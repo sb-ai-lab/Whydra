@@ -1,5 +1,5 @@
 loader:
-  _target_: causal_graphs.data.loaders.TetradLoader
+  _target_: whydra.data.loaders.TetradLoader
   data_dir: "./datasets/Tetrad"
   ground_truth_dir: "./datasets/Tetrad/Ground truth"
 

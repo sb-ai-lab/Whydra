@@ -1,5 +1,5 @@
 loader:
-  _target_: causal_graphs.data.loaders.FeedbacksLoader
+  _target_: whydra.data.loaders.FeedbacksLoader
   data_dir: "./datasets/benchmarks/example-causal-datasets/simulated/feedbacks/data/{name}/sim-01.{name}.continuous.txt"
   ground_truth_dir:  "./datasets/benchmarks/example-causal-datasets/simulated/feedbacks/ground.truth/{name}/{name}.ground.truth.graph.txt"
 

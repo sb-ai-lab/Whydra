@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+causal_env/
+
+# IDEs
+.vscode/
+.idea/
+
+# Hydra outputs (logs and configs)
+outputs/
+multirun/
+.hydra/
+
+# Project Results & Profiling
+results/
+plots/
+*.csv
+*.png
+
+# System
+.DS_Store
+Thumbs.db
+
+# data files
+/data

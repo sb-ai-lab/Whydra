@@ -1,0 +1,23 @@
+defaults:
+  - _self_
+  - algorithm: pc_stable
+  - benchmark: bnlearn
+
+# Общие настройки
+output_dir: "results"
+output_filename: "results.csv"
+output_filename_for_bootstrap: "results_by_bootstraps.csv"
+
+# Сохранить промежуточные файлы и графы
+keep_intermediate_files: True
+# Продолжить расчет с уже посчитанными графами в algo_results/{benchmark_name}
+resume: False
+
+# Настройки bootstrap
+bootstrap: true
+n_bootstraps: 1
+seed: 42
+
+# Настройки визуализации
+save_plots: true
+plots_dir: "plots"

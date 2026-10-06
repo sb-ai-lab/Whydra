@@ -1,0 +1,7 @@
+_target_: causal_graphs.algorithms.wrappers.StandalonePCStable
+alpha: 0.05
+indep_test: fisherz
+n_jobs: 1
+# Параметры для логирования
+verbose: false
+show_progress: true

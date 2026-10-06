@@ -1,0 +1,21 @@
+loader:
+  _target_: causal_graphs.data.loaders.TetradLoader
+  # Путь к папке, где лежат data_linear_*.txt
+  data_dir: "./datasets/Tetrad"
+  # Путь к папке Ground truth внутри Tetrad
+  ground_truth_dir: "./datasets/Tetrad/Ground truth"
+
+# Для непрерывных данных используем Fisher-Z
+indep_test: fisherz
+
+names:
+  - linear_1
+  - linear_2
+  - linear_3
+  - linear_4
+  - linear_5
+  - linear_6
+  - linear_7
+  - linear_8
+  - linear_9
+  - linear_10

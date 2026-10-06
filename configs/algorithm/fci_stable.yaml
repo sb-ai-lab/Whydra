@@ -1,0 +1,4 @@
+_target_: causal_graphs.algorithms.wrappers.StandaloneFCIStable
+alpha: 0.05
+indep_test: fisherz
+# n_jobs: 16

@@ -1,0 +1,18 @@
+loader:
+  _target_: causal_graphs.data.loaders.FeedbacksLoader
+  data_dir: "./datasets/benchmarks/example-causal-datasets/simulated/feedbacks/data/{name}/sim-01.{name}.continuous.txt"
+  ground_truth_dir:  "./datasets/benchmarks/example-causal-datasets/simulated/feedbacks/ground.truth/{name}/{name}.ground.truth.graph.txt"
+
+indep_test: fisherz
+
+names:
+  - Network1_amp
+  - Network2_amp
+  - Network3_amp
+  - Network4_amp
+  - Network5_amp
+  - Network5_cont
+  - Network5_cont_p3n7
+  - Network5_cont_p7n3
+  - Network6_amp
+  - Network6_cont

@@ -1,0 +1,14 @@
+services:
+
+  algorithm-benchmark:
+    image: algorithm-benchmark:latest
+    build:
+      context: .
+      dockerfile: ./Dockerfile.bench
+    env_file:
+      - .env
+    volumes:
+      - ${PATH_TO_DATASETS}:/app/datasets
+      - ${PATH_TO_RESULTS}:/app/results
+    container_name: algorithm-benchmark
+    command: python run_all.py

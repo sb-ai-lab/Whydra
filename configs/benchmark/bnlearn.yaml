@@ -1,0 +1,13 @@
+loader:
+  _target_: causal_graphs.data.loaders.BnLearnLoader
+  data_dir: "./datasets/benchmarks/bnlearn_discrete_10000/data/{name}.txt"
+  ground_truth_dir: "./datasets/benchmarks/bnlearn_discrete_10000/truth_dag_graph/{name}.graph.txt"
+
+# тест хи-квадрат, так как данные дискретные
+indep_test: chisq
+
+names:
+#  - alarm
+  - child
+#  - insurance
+#  - water

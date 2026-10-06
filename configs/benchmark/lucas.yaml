@@ -1,0 +1,9 @@
+loader:
+  _target_: causal_graphs.data.loaders.LucasLoader
+  data_dir: "./datasets/benchmarks/lucas/data/{name}/{name}_train.data"
+  targets_dir: "./datasets/benchmarks/lucas/data/{name}/{name}_train.targets"
+  ground_truth_dir: "./datasets/benchmarks/lucas/ground.truth/{name}/{name}.ground.truth.graph.txt"
+
+indep_test: chisq
+names:
+  - lucas0

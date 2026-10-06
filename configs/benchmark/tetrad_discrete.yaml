@@ -1,0 +1,19 @@
+loader:
+  _target_: causal_graphs.data.loaders.TetradLoader
+  data_dir: "./datasets/Tetrad"
+  ground_truth_dir: "./datasets/Tetrad/Ground truth"
+
+# Для дискретных данных используем Chi-Square
+indep_test: chisq
+
+names:
+  - discrete_1
+  - discrete_2
+  - discrete_3
+  - discrete_4
+  - discrete_5
+  - discrete_6
+  - discrete_7
+  - discrete_8
+  - discrete_9
+  - discrete_10

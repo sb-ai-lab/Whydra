@@ -11,9 +11,9 @@ from pathlib import Path
 
 np.set_printoptions(threshold=sys.maxsize, linewidth=200)
 
-from causal_graphs.evaluation.metrics import calculate_metrics
-from causal_graphs.evaluation.graph_utils import load_ground_truth, draw_graph, adj_matrix_to_graph, get_adj_matrix
-from causal_graphs.algorithms.standalone.profiler import profiler
+from whydra.evaluation.metrics import calculate_metrics
+from whydra.evaluation.graph_utils import load_ground_truth, draw_graph, adj_matrix_to_graph, get_adj_matrix
+from whydra.algorithms.standalone.profiler import profiler
 
 
 def cleanup_intermediate_files(directories):
@@ -212,7 +212,7 @@ def main(cfg: DictConfig):
     target_indep_test = cfg.benchmark.get("indep_test", "fisherz")
 
     method_name = cfg.algorithm._target_.split('.')[-1]
-    library_name = "causal_graphs"
+    library_name = "whydra"
 
     print(f"Running algorithm: {method_name}")
     print(f"Using independence test: {target_indep_test}")

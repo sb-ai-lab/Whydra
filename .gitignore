@@ -32,3 +32,8 @@ Thumbs.db
 
 # data files
 /data
+# Packaging
+dist/
+build/
+*.egg-info/
+.pytest_cache/

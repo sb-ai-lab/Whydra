@@ -1,18 +1,49 @@
-# Установка
-Перед запуском убедитесь, что у вас установлен Graphviz в системе:
+# Whydra
+
+Быстрая библиотека для поиска причинно-следственных связей (causal discovery): реализации PC-stable, FCI-stable и RAI с поддержкой параллельных вычислений.
+
+## Установка
+
+```bash
+pip install whydra
+```
+
+Требуется Python 3.10+.
+
+Для сохранения изображений графов (`whydra.evaluation.graph_utils.draw_graph`) в системе должен быть установлен Graphviz:
 * **Linux:** `sudo apt-get install graphviz`
 * **Windows:** Скачайте инсталлятор с [сайта Graphviz](https://graphviz.org/download/), установите и **добавьте путь к bin в PATH**.
 
-Установка необходимого окружения:
-```bash
-conda create -n sber_library python=3.10 pip
-conda activate sber_library
-pip install -r requirements.txt
+## Быстрый старт
+
+```python
+import numpy as np
+from whydra import StandalonePCStable
+
+rng = np.random.default_rng(0)
+x1, x2 = rng.normal(size=(2, 1000))
+x3 = x1 + x2 + rng.normal(scale=0.5, size=1000)
+data = np.column_stack([x1, x2, x3])  # (n_samples, n_features)
+
+graph = StandalonePCStable(alpha=0.05, indep_test="fisherz", n_jobs=4).run(data)
+print(graph)  # GeneralGraph из causal-learn: X1 --> X3, X2 --> X3
 ```
+
+Доступные алгоритмы: `StandalonePCStable`, `StandaloneFCIStable`, `StandaloneRAIStable`, `StandaloneRAIOptimized`. Тесты независимости: `fisherz` (непрерывные данные) и `chisq` (дискретные).
 
 ## Лицензия
 
-Whydra распространяется по лицензии [Apache License 2.0](LICENSE).
+Whydra распространяется по лицензии [Apache License 2.0](https://github.com/sb-ai-lab/Whydra/blob/main/LICENSE).
+
+# Бенчмарки
+
+Для запуска бенчмарков склонируйте репозиторий и установите пакет вместе с зависимостями для бенчмарков (Hydra и др.):
+```bash
+git clone https://github.com/sb-ai-lab/Whydra.git
+cd Whydra
+pip install -e ".[bench]"
+```
+Точные версии библиотек, на которых проводились замеры, зафиксированы в `requirements.txt` (`pip install -r requirements.txt`).
 
 ##  Как запускать
 1. Прописываем в configs/config.yaml

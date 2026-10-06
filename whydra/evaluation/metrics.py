@@ -4,7 +4,7 @@ from causallearn.graph.GeneralGraph import GeneralGraph
 from causallearn.graph.Endpoint import Endpoint
 from causallearn.utils.DAG2CPDAG import dag2cpdag
 
-from causal_graphs.evaluation.graph_utils import get_adj_matrix
+from .graph_utils import get_adj_matrix
 
 
 def convert_pag_to_cpdag_proxy(adj_mat):

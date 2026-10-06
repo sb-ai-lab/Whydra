@@ -1,5 +1,3 @@
-import sys
-import os
 import numpy as np
 from causallearn.graph.GeneralGraph import GeneralGraph
 from causallearn.graph.GraphNode import GraphNode
@@ -8,13 +6,6 @@ from causallearn.graph.Endpoint import Endpoint
 
 from .base import CausalAlgorithm
 from .graph_core import CausalGraph, CIT
-
-# Хак для импорта standalone файлов
-current_dir = os.path.dirname(os.path.abspath(__file__))
-standalone_dir = os.path.join(current_dir, 'standalone')
-if standalone_dir not in sys.path:
-    sys.path.append(standalone_dir)
-
 from .standalone import pc_algo
 from .standalone import fci_algo
 from .standalone import rai_algo

@@ -11,14 +11,31 @@ from ...background_knowledge import (
     orientation_guard_for,
 )
 from .profiler import profiler
-def skeleton_discovery(cg: CausalGraph, alpha: float, stable: bool, verbose: bool, show_progress: bool,
-                       protected_edges=()):
+def skeleton_discovery(
+    cg: CausalGraph,
+    alpha: float,
+    stable: bool,
+    verbose: bool,
+    show_progress: bool,
+    protected_edges=(),
+):
     """
     Этап 1: Поиск скелета.
 
     ``protected_edges`` — пары, которые требует background knowledge. Такое
     ребро не удаляется и sepset для него не записывается: пара остаётся
     смежной, и записанный sepset только мешал бы ориентации коллайдеров.
+
+    Args:
+        cg: causal graph carrying the CI test.
+        alpha: significance level.
+        stable: whether to test all conditioning sets at each depth.
+        verbose: verbosity flag.
+        show_progress: whether to display progress.
+        protected_edges: pairs that background knowledge keeps adjacent.
+
+    Returns:
+        CausalGraph: input graph with its skeleton and separating unions updated.
     """
     no_of_var = len(cg.nodes)
     protected_edges = {
@@ -45,10 +62,12 @@ def skeleton_discovery(cg: CausalGraph, alpha: float, stable: bool, verbose: boo
 
                     for y in Neigh_x:
                         # ВАЖНО: Не пропускаем проверку, даже если (x, y) уже в edge_removal.
-                        # Это нужно для сбора ВСЕХ sepsets в stable режиме.
+                        # Это нужно для объединения индексов всех разделяющих S в stable режиме.
 
                         Neigh_x_noy = np.delete(Neigh_x, np.where(Neigh_x == y))
 
+                        found = False
+                        members = set()
                         for S in combinations(Neigh_x_noy, depth):
                             p_val = cg.ci_test(x, y, S)
                             if p_val > alpha:
@@ -60,13 +79,18 @@ def skeleton_discovery(cg: CausalGraph, alpha: float, stable: bool, verbose: boo
                                     _append_sepset(cg, x, y, S)
                                     break
                                 else:
-                                    edge_removal.append((x, y))
-                                    edge_removal.append((y, x))
-                                    _append_sepset(cg, x, y, S)
-                                    # В causal-learn здесь break, так как для пары (x, y)
-                                    # на данной глубине достаточно найти один sepset.
-                                    # Соседние sepsets (для y, x) будут найдены, когда цикл дойдет до y.
-                                    break
+                                    # causal-learn (stable=True) не прерывает перебор:
+                                    # на данной глубине тестируются все S, а объединение
+                                    # их разделяющих индексов определяет коллайдеры
+                                    # в orient_colliders.
+                                    if not found:
+                                        edge_removal.append((x, y))
+                                        edge_removal.append((y, x))
+                                        found = True
+                                    members.update(int(v) for v in S)
+
+                        if found:
+                            _append_sepset(cg, x, y, members)
 
                 if stable:
                     for (x, y) in set(edge_removal):
@@ -81,15 +105,28 @@ def skeleton_discovery(cg: CausalGraph, alpha: float, stable: bool, verbose: boo
     return cg
 
 
-def _append_sepset(cg, x, y, S):
-    if cg.sepset[x, y] is None:
-        cg.sepset[x, y] = [S]
-    else:
-        cg.sepset[x, y].append(S)
-    if cg.sepset[y, x] is None:
-        cg.sepset[y, x] = [S]
-    else:
-        cg.sepset[y, x].append(S)
+def _append_sepset(
+    cg,
+    x,
+    y,
+    S,
+):
+    """Merge separating-set members into one sorted tuple per direction.
+
+    Args:
+        cg: causal graph whose separating sets are updated.
+        x: first node index.
+        y: second node index.
+        S: separating-set members to merge as plain Python integers.
+
+    Returns:
+        None: updates both symmetric cells in place, preserving empty sets.
+    """
+    members = {int(v) for v in S}
+    for i, j in ((x, y), (y, x)):
+        current = cg.sepset[i, j]
+        union = members if current is None else members.union(current[0])
+        cg.sepset[i, j] = [tuple(sorted(union))]
 
 
 def orient_colliders(cg: CausalGraph, priority: int = 2):
@@ -146,6 +183,8 @@ def _orient_edge_conflict_aware(cg, source, target):
         return
 
     if cg.is_undirected(source, target):
+        # causal-learn Meek skips an orientation whose target is already an ancestor of the source.
+        if cg.is_ancestor_of(target, source): return False
         if not bk_allows_edge(getattr(cg, "bk_guard", None), cg.G.graph,
                               source, target, Endpoint.TAIL.value, Endpoint.ARROW.value):
             return False

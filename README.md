@@ -1,6 +1,6 @@
 # Whydra
 
-Быстрая библиотека для поиска причинно-следственных связей (causal discovery): реализации PC-stable, FCI-stable и RAI с поддержкой параллельных вычислений.
+Быстрая библиотека для поиска причинно-следственных связей (causal discovery): реализации PC-stable, семейства FCI (FCI-stable, CFCI, RFCI, GFCI, FCI+) и RAI с поддержкой параллельных вычислений и фоновых знаний (background knowledge).
 
 ## Установка
 
@@ -26,10 +26,10 @@ x3 = x1 + x2 + rng.normal(scale=0.5, size=1000)
 data = np.column_stack([x1, x2, x3])  # (n_samples, n_features)
 
 graph = StandalonePCStable(alpha=0.05, indep_test="fisherz", n_jobs=4).run(data)
-print(graph)  # GeneralGraph из causal-learn: X1 --> X3, X2 --> X3
+print([str(edge) for edge in graph.get_graph_edges()])  # ['X1 --> X3', 'X2 --> X3']
 ```
 
-Доступные алгоритмы: `StandalonePCStable`, `StandaloneFCIStable`, `StandaloneRAIStable`, `StandaloneRAIOptimized`. Тесты независимости: `fisherz` (непрерывные данные) и `chisq` (дискретные).
+Доступные алгоритмы: `StandalonePCStable`, `ParallelPCStable`, `StandaloneFCIStable` (и варианты с кэшем CI-тестов `StandaloneFCIStableCached`, `StandaloneFCIStableParallelCached`), `StandaloneCFCIStable`, `StandaloneRFCIStable`, `StandaloneGFCIStable`, `StandaloneFCIPlusStable`, `StandaloneRAIStable`, `StandaloneRAIOptimized`. Алгоритм можно создать и по имени: `whydra.create_standalone_algorithm("rfci_stable", alpha=0.01)`. Тесты независимости: `fisherz` (непрерывные данные) и `chisq` (дискретные).
 
 ## Лицензия
 
@@ -87,12 +87,16 @@ python main.py
 
 В поле **algorithm** можно выбрать алгоритм:
 ```
-pc_stable
-fci_stable
-rai_stable
+pc_stable, pc_stable_par, pc_stable_seq, pc_stable_4/8/16
+fci_stable, fci_stable_16, fci_stable_cash, fci_stable_paralel_cash
+cfci_stable, cfci_stable_paralel_cash
+rfci_stable
+gfci_stable
+fci_plus_stable, fci_plus_stable_paralel_cash
+rai_stable, rai_optimized
 ```
 
-Для запуска параллельной версии алгоритмов только для pc_stable, fci_stable, rai_stable необходимо заполнить количество параллельных потоков в соответствующем файле алгоритма. При отсутствии переменной или при значении 1 расчет запускается в последовательном режиме.
+Для запуска параллельной версии алгоритмов необходимо заполнить количество параллельных потоков в соответствующем файле алгоритма. При отсутствии переменной или при значении 1 расчет запускается в последовательном режиме.
 ```
 n_jobs: 6
 ```
@@ -107,12 +111,8 @@ tetrad_linear
 # и в configs/benchmark/tetrad_linear.yaml
 
 bnlearn
-# содержит в себе в configs/benchmark/bnlearn.yaml   
-# следующие бенчмарки 
-  - alarm
-  - child
-  - insurance
-  - water
+# дискретные сети bnlearn: alarm, andes, asia, barley, cancer, child, earthquake,
+# hailfinder, hepar2, insurance, sachs, survey, water, win95pts
 ```
 также есть два дополнительных бенчмарка меньшего размера:
 ```  
@@ -122,51 +122,29 @@ lucas
 они использовались как вспомогательные во время разработки. 
 
 
-# Данные к бенчмаркам feedback и lucas:
-https://drive.google.com/file/d/1CrjmgghvCyx0l5RsABnn53Kiyl-LfxuP/view?usp=sharing
+# Данные к бенчмаркам
 
-Их нужно распаковать и прописать в конфиге пути
+Датасеты в репозиторий не входят. `main.py` прогоняет алгоритм на всех кейсах,
+которые найдёт в папке `whydra_benchmarks/cases` (относительно папки запуска).
+Каждый кейс раскладывается так:
 ```
-configs/benchmark/feedback.yaml
+whydra_benchmarks/cases/<benchmark>/<case>/input/<case>.txt               # данные
+whydra_benchmarks/cases/<benchmark>/<case>/ground.truth/<case>.graph.txt  # эталонный граф
 ```
-там нужен путь к папке 
-```
-example-causal-datasets/simulated/feedbacks/  (увидите как в конфиге)
-``` 
+Например, `whydra_benchmarks/cases/bnlearn/child/input/child.txt`.
 
-```
-configs/benchmark/lucas.yaml
-```
-нужен путь к папке 
-```
-lucas/data/   (увидите как в конфиге)
-```
+Архивы с данными:
+* feedback и lucas: https://drive.google.com/file/d/1CrjmgghvCyx0l5RsABnn53Kiyl-LfxuP/view?usp=sharing
+* bnlearn: https://drive.google.com/file/d/1t3DUjOpOn7Zztt252mGGHowxC3j2n8x7/view?usp=sharing
+* Tetrad: https://drive.google.com/file/d/1PEUl6F9y2urkgHGR-YdPDbPe7UsFHmwm/view?usp=sharing
 
-# Данные к бенчмаркам bnlearn:
-https://drive.google.com/file/d/1t3DUjOpOn7Zztt252mGGHowxC3j2n8x7/view?usp=sharing
-
-Их нужно распаковать и прописать в конфиге пути
-```
-configs/benchmark/bnlearn.yaml
-```
-Запускать алгоритм можно командой:
+Запуск:
 ```commandline
-python main.py algorithm=pc_stable benchmark=bnlearn 
+python main.py algorithm=pc_stable benchmark=bnlearn
+python main.py algorithm=rfci_stable benchmark=bnlearn
 ```
+Из конфига бенчмарка `main.py` берёт тест независимости (`indep_test`: `chisq` для
+дискретных данных, `fisherz` для непрерывных).
 
-# Данные к бенчмаркам Tetrad
-
-
-https://drive.google.com/file/d/1PEUl6F9y2urkgHGR-YdPDbPe7UsFHmwm/view?usp=sharing
-
-Их нужно распаковать и прописать пути в конфигах:
-```
-configs/benchmark/tetrad_discrete.yaml
-configs/benchmark/tetrad_linear.yaml
-```
-Запускаются командами: 
-
-```commandline
-python main.py benchmark=tetrad_discrete algorithm=pc_stable
-python main.py benchmark=tetrad_linear algorithm=pc_stable
-```
+`run_bootstrap_consensus.py` строит устойчивый граф по бутстрэп-выборкам одного кейса;
+он читает данные через `loader` из конфига бенчмарка (пути в `configs/benchmark/*.yaml`).

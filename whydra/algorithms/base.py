@@ -1,11 +1,60 @@
 from abc import ABC, abstractmethod
 import numpy as np
-from causallearn.graph.GeneralGraph import GeneralGraph
+from .graph_core import GeneralGraph
 
 class CausalAlgorithm(ABC):
+    """
+    Абстрактный базовый класс для алгоритмов поиска причинной структуры.
+
+    Все реализации должны предоставлять единый метод ``run``, принимающий
+    матрицу наблюдений и возвращающий граф причинных связей в формате
+    локальный ``GeneralGraph`` библиотеки.
+
+    Общий контракт параметров
+    -------------------------
+    Каждая обёртка обязана принимать этот набор — либо в конструкторе, либо
+    как ``**kwargs``, доходящие до точки входа алгоритма:
+
+    ``alpha``
+        Уровень значимости теста условной независимости.
+    ``indep_test``
+        Имя CI-теста; см. ``graph_core.IMPLEMENTED_TESTS``.
+    ``n_jobs``
+        Степень параллелизма. ``1`` — последовательный режим.
+    ``verbose``
+        Диагностический вывод алгоритма.
+    ``show_progress``
+        Прогресс-бар поиска скелета. По умолчанию выключен: библиотека
+        не должна печатать в поток ошибок без явной просьбы.
+    ``background_knowledge``
+        Экземпляр ``BackgroundKnowledge`` либо ``None``.
+
+    Набор общий намеренно: раньше ``show_progress`` принимали PC, RFCI и RAI,
+    а всё семейство FCI на нём падало с ``TypeError``, и предсказать это по
+    имени алгоритма было нельзя. Отдельные алгоритмы вправе принимать
+    дополнительные параметры сверх этого набора.
+    """
     @abstractmethod
     def run(self, data: np.ndarray, **kwargs) -> GeneralGraph:
         """
-        Принимает данные (n_samples, n_features) и возвращает GeneralGraph.
+        Запускает алгоритм причинного вывода на входных данных. Принимает данные (n_samples, n_features) и возвращает GeneralGraph.
+
+        Parameters
+        ----------
+        data : np.ndarray
+            Матрица наблюдений формы ``(n_samples, n_features)``, где
+            ``n_samples`` — число наблюдений, ``n_features`` — число переменных.
+        **kwargs
+            Дополнительные параметры конкретной реализации алгоритма.
+
+        Returns
+        -------
+        GeneralGraph
+            Оценённый причинный граф в формате ``whydra.algorithms.graph_core``.
+
+        Raises
+        ------
+        NotImplementedError
+            Если метод не переопределён в дочернем классе.
         """
         pass

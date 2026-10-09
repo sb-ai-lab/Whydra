@@ -4,12 +4,14 @@ from tqdm.auto import tqdm
 from joblib import Parallel, delayed
 
 from ..graph_core import CausalGraph, Endpoint, Edge
+from ...background_knowledge import (
+    BKPhase,
+    MatrixEncoding,
+    apply_bk_checkpoint,
+    bk_allows_edge,
+    orientation_guard_for,
+)
 from .profiler import profiler
-
-from causallearn.graph.GeneralGraph import GeneralGraph as CLGeneralGraph
-from causallearn.graph.GraphNode import GraphNode as CLGraphNode
-from causallearn.graph.Edge import Edge as CLEdge
-from causallearn.graph.Endpoint import Endpoint as CLEndpoint
 
 
 def _skeleton_discovery_worker(x: int, cg: CausalGraph, depth: int, alpha: float, verbose: bool):
@@ -46,18 +48,29 @@ def _skeleton_discovery_worker(x: int, cg: CausalGraph, depth: int, alpha: float
     return edge_removals_local, sepsets_local
 
 
-def skeleton_discovery(cg: CausalGraph, alpha: float, stable: bool, verbose: bool, show_progress: bool, n_jobs: int):
+def skeleton_discovery(
+    cg: CausalGraph,
+    alpha: float,
+    stable: bool,
+    verbose: bool,
+    show_progress: bool,
+    n_jobs: int,
+    protected_edges=(),
+):
     """
     Этап 1: Поиск скелета (Skeleton Discovery) с параллелизацией.
     """
     no_of_var = len(cg.nodes)
+    protected_edges = {
+        frozenset((int(x), int(y))) for x, y in protected_edges
+    }
     depth = -1
 
     # Если n_jobs < 0, используем все доступные ядра
     if n_jobs < 0:
         import os
         n_jobs = os.cpu_count()
-    n_jobs=12
+    # n_jobs=12
 
     pbar = None
     if show_progress:
@@ -67,8 +80,8 @@ def skeleton_discovery(cg: CausalGraph, alpha: float, stable: bool, verbose: boo
     with profiler.time_block("skeleton_discovery_total", tags={"algo": "parallel", "n_jobs": n_jobs}):
         while cg.max_degree() - 1 > depth:
             depth += 1
-            if depth == 2:
-                break
+            # if depth == 2:
+            #     break
 
             if show_progress:
                 pbar.reset()
@@ -104,12 +117,21 @@ def skeleton_discovery(cg: CausalGraph, alpha: float, stable: bool, verbose: boo
                 # Для PC-Stable это делается строго после завершения всех проверок на текущей глубине.
 
                 for (x, y) in edge_removal_epoch:
+                    if frozenset((int(x), int(y))) in protected_edges:
+                        continue
                     # Удаляем ребро (симметрично)
                     edge = cg.G.get_edge(cg.nodes[x], cg.nodes[y])
                     if edge:
                         cg.G.remove_edge(edge)
 
                 for (x, y, S) in sepset_updates_epoch:
+                    # Защищённое ребро не удаляется, поэтому и разделяющее
+                    # множество для него записывать нельзя: ориентация
+                    # коллайдеров спрашивает, лежит ли средний узел в sepset
+                    # внешней пары, и запись для выжившего ребра молча меняет
+                    # ориентацию соседних троек.
+                    if frozenset((int(x), int(y))) in protected_edges:
+                        continue
                     _append_sepset(cg, x, y, S)
 
             # Если на текущей глубине ничего не удалили и макс. степень уже меньше глубины, можно выходить раньше
@@ -161,10 +183,15 @@ def orient_colliders(cg: CausalGraph, priority: int = 2):
 
 
 def _orient_edge(cg, source, target):
+    if not bk_allows_edge(getattr(cg, "bk_guard", None), cg.G.graph,
+                          source, target, Endpoint.TAIL.value, Endpoint.ARROW.value):
+        return False
     edge = cg.G.get_edge(cg.nodes[source], cg.nodes[target])
     if edge:
         cg.G.remove_edge(edge)
         cg.G.add_edge(Edge(cg.nodes[source], cg.nodes[target], Endpoint.TAIL, Endpoint.ARROW))
+        return True
+    return False
 
 
 def _orient_edge_conflict_aware(cg, source, target):
@@ -172,8 +199,8 @@ def _orient_edge_conflict_aware(cg, source, target):
     Пытается ориентировать source -> target.
     Используется в Meek rules.
     """
-    if cg.is_fully_directed(source, target): return
-    if cg.is_bidirected(source, target): return
+    if cg.is_fully_directed(source, target): return False
+    if cg.is_bidirected(source, target): return False
 
     if cg.is_fully_directed(target, source):
         # Conflict -> Bi-directed
@@ -181,33 +208,37 @@ def _orient_edge_conflict_aware(cg, source, target):
         if edge:
             cg.G.remove_edge(edge)
             cg.G.add_edge(Edge(cg.nodes[source], cg.nodes[target], Endpoint.ARROW, Endpoint.ARROW))
-        return
+            return True
+        return False
 
     if cg.is_undirected(source, target):
+        if not bk_allows_edge(getattr(cg, "bk_guard", None), cg.G.graph,
+                              source, target, Endpoint.TAIL.value, Endpoint.ARROW.value):
+            return False
         edge = cg.G.get_edge(cg.nodes[source], cg.nodes[target])
         if edge:
             cg.G.remove_edge(edge)
             cg.G.add_edge(Edge(cg.nodes[source], cg.nodes[target], Endpoint.TAIL, Endpoint.ARROW))
-        return
+            return True
+        return False
+    return False
 
 
-def apply_meek_rules(cg: CausalGraph):
+def apply_meek_rules(cg: CausalGraph, background_knowledge=None):
     """
     Этап 3: Правила Мика (Meek rules).
     """
     loop = True
     while loop:
-        loop = False
+        before_pass = cg.G.graph.copy()
 
         # R1
         triples = cg.find_unshielded_triples()
         for (i, j, k) in triples:
             if cg.is_fully_directed(i, j) and cg.is_undirected(j, k):
                 _orient_edge_conflict_aware(cg, j, k)
-                loop = True
             elif cg.is_fully_directed(k, j) and cg.is_undirected(j, i):
                 _orient_edge_conflict_aware(cg, j, i)
-                loop = True
 
         # R2
         triangles = cg.find_triangles()
@@ -216,7 +247,6 @@ def apply_meek_rules(cg: CausalGraph):
             for a, b, c in permutations(nodes_tri, 3):
                 if cg.is_fully_directed(a, b) and cg.is_fully_directed(b, c) and cg.is_undirected(a, c):
                     _orient_edge_conflict_aware(cg, a, c)
-                    loop = True
 
         # R3
         kites = cg.find_kites()
@@ -224,31 +254,25 @@ def apply_meek_rules(cg: CausalGraph):
             if cg.is_fully_directed(j, l) and cg.is_fully_directed(k, l) and cg.is_undirected(i, l):
                 if cg.is_undirected(i, j) and cg.is_undirected(i, k):
                     _orient_edge_conflict_aware(cg, i, l)
-                    loop = True
+
+        apply_bk_checkpoint(
+            background_knowledge,
+            cg.G.graph,
+            [node.name for node in cg.nodes],
+            phase=BKPhase.BETWEEN_ORIENTATION,
+            checkpoint="after_meek_pass",
+            encoding=MatrixEncoding.STANDARD,
+            graph_kind="cpdag",
+            previous=before_pass,
+        )
+        loop = not np.array_equal(before_pass, cg.G.graph)
 
     return cg
 
 
-def convert_to_causallearn_graph(local_cg: CausalGraph) -> CLGeneralGraph:
-    cl_nodes = [CLGraphNode(node.name) for node in local_cg.nodes]
-    cl_graph = CLGeneralGraph(cl_nodes)
-
-    for i in range(local_cg.G.num_vars):
-        for j in range(i + 1, local_cg.G.num_vars):
-            end_j_val = local_cg.G.graph[i, j]
-            end_i_val = local_cg.G.graph[j, i]
-
-            if end_j_val != 0 or end_i_val != 0:
-                def map_end(val):
-                    if val == 1: return CLEndpoint.ARROW
-                    if val == -1: return CLEndpoint.TAIL
-                    if val == 2: return CLEndpoint.CIRCLE
-                    return CLEndpoint.NULL
-
-                cl_edge = CLEdge(cl_nodes[i], cl_nodes[j], map_end(end_i_val), map_end(end_j_val))
-                cl_graph.add_edge(cl_edge)
-
-    return cl_graph
+def convert_to_general_graph(local_cg: CausalGraph):
+    """Return the local graph maintained by the algorithm."""
+    return local_cg.G
 
 
 def pc_stable(
@@ -263,25 +287,69 @@ def pc_stable(
         n_jobs: int = -1,
         **kwargs
 ):
+    node_names = [node.name for node in cg.nodes]
+    apply_bk_checkpoint(
+        background_knowledge,
+        cg.G.graph,
+        node_names,
+        phase=BKPhase.PRE_SEARCH,
+        checkpoint="before_skeleton",
+        encoding=MatrixEncoding.STANDARD,
+        graph_kind="cpdag",
+    )
+    # Guard уровня записи: чекпоинт после фазы направление исправит, но
+    # коллайдер, потерянный из-за запрещённой стрелки, уже не вернёт.
+    cg.bk_guard = orientation_guard_for(background_knowledge, node_names)
+    protected_edges = ()
+    if background_knowledge is not None:
+        protected_edges = background_knowledge.required_pairs(
+            node_names, phase=BKPhase.PRE_SEARCH
+        )
     if verbose:
         print(f"Starting Parallel Skeleton Discovery with n_jobs={n_jobs}...")
 
     with profiler.time_block("full_pc_algorithm", tags={"algo": "parallel", "n_jobs": n_jobs}):
-        skeleton_discovery(cg, alpha, stable, verbose, show_progress, n_jobs)
+        skeleton_discovery(
+            cg,
+            alpha,
+            stable,
+            verbose,
+            show_progress,
+            n_jobs,
+            protected_edges=protected_edges,
+        )
 
         if verbose:
             print("Orienting Colliders...")
         with profiler.time_block("orient_colliders", tags={"algo": "parallel"}):
             orient_colliders(cg, priority=uc_priority)
+            apply_bk_checkpoint(
+                background_knowledge,
+                cg.G.graph,
+                node_names,
+                phase=BKPhase.BETWEEN_ORIENTATION,
+                checkpoint="after_colliders",
+                encoding=MatrixEncoding.STANDARD,
+                graph_kind="cpdag",
+            )
 
         if verbose:
             print("Applying Meek Rules...")
         with profiler.time_block("apply_meek_rules", tags={"algo": "parallel"}):
-            apply_meek_rules(cg)
+            apply_meek_rules(cg, background_knowledge=background_knowledge)
+
+        apply_bk_checkpoint(
+            background_knowledge,
+            cg.G.graph,
+            node_names,
+            phase=BKPhase.POST_ORIENTATION,
+            checkpoint="after_orientation",
+            encoding=MatrixEncoding.STANDARD,
+            graph_kind="cpdag",
+        )
 
     class ResultWrapper:
         def __init__(self, g):
             self.G = g
 
-    final_cl_graph = convert_to_causallearn_graph(cg)
-    return ResultWrapper(final_cl_graph)
+    return ResultWrapper(convert_to_general_graph(cg))

@@ -1,0 +1,4 @@
+_target_: whydra.algorithms.wrappers.StandaloneFCIPlusStable
+alpha: 0.05
+indep_test: fisherz
+# n_jobs: 16

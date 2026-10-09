@@ -1,0 +1,3 @@
+_target_: whydra.algorithms.wrappers.StandaloneFCIStable
+alpha: 0.05
+n_jobs: 16

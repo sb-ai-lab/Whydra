@@ -1,4 +1,3 @@
 _target_: whydra.algorithms.wrappers.StandaloneRAIOptimized
 alpha: 0.05
 indep_test: fisherz
-

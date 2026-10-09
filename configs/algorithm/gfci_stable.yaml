@@ -1,0 +1,11 @@
+_target_: whydra.algorithms.wrappers.StandaloneGFCIStable
+alpha: 0.05
+indep_test: fisherz
+n_jobs: 2
+score_func: auto
+use_max_p: true
+depth: -1
+start_from_complete_graph: false
+use_ci_cache: true
+ci_backend: auto
+process_min_vars: 150

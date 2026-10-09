@@ -5,13 +5,13 @@ build-backend = "hatchling.build"
 [project]
 name = "whydra"
 dynamic = ["version"]
-description = "Fast causal discovery library: parallel PC-stable, FCI-stable and RAI algorithms."
+description = "Fast causal discovery library: parallel PC-stable, FCI-stable (incl. CFCI, RFCI, GFCI, FCI+) and RAI algorithms."
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 requires-python = ">=3.10"
 authors = [{ name = "Sber AI Lab" }]
-keywords = ["causal discovery", "causal inference", "bayesian networks", "pc algorithm", "fci", "rai"]
+keywords = ["causal discovery", "causal inference", "bayesian networks", "pc algorithm", "fci", "rfci", "gfci", "rai"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Science/Research",
@@ -31,7 +31,7 @@ dependencies = [
     "pandas>=2.0",
     "joblib>=1.3",
     "tqdm>=4.60",
-    "causal-learn>=0.1.4",
+    "networkx>=3.1",
 ]
 
 [project.optional-dependencies]
@@ -39,6 +39,7 @@ bench = [
     "hydra-core>=1.3",
     "omegaconf>=2.3",
     "matplotlib>=3.7",
+    "pydot>=1.4",
 ]
 test = ["pytest>=7"]
 

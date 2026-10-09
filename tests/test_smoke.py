@@ -3,10 +3,15 @@ import pytest
 
 import whydra
 from whydra import (
+    ParallelPCStable,
+    StandaloneCFCIStable,
+    StandaloneFCIPlusStable,
     StandaloneFCIStable,
+    StandaloneGFCIStable,
     StandalonePCStable,
     StandaloneRAIOptimized,
     StandaloneRAIStable,
+    StandaloneRFCIStable,
 )
 from whydra.evaluation.graph_utils import get_adj_matrix
 
@@ -40,11 +45,16 @@ def test_version():
     [
         StandalonePCStable(n_jobs=1),
         StandalonePCStable(n_jobs=2),
+        ParallelPCStable(n_jobs=2),
         StandaloneFCIStable(n_jobs=1),
+        StandaloneCFCIStable(n_jobs=1),
+        StandaloneRFCIStable(n_jobs=1),
+        StandaloneGFCIStable(n_jobs=1),
+        StandaloneFCIPlusStable(n_jobs=1),
         StandaloneRAIStable(n_jobs=1),
         StandaloneRAIOptimized(),
     ],
-    ids=["pc_seq", "pc_par", "fci", "rai_stable", "rai_optimized"],
+    ids=["pc_seq", "pc_par", "parallel_pc", "fci", "cfci", "rfci", "gfci", "fci_plus", "rai_stable", "rai_optimized"],
 )
 def test_recovers_skeleton(algo, data):
     graph = algo.run(data)

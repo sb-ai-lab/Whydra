@@ -1,8 +1,11 @@
 defaults:
   - _self_
-  - algorithm: pc_stable
+  - algorithm: rfci_stable
   - benchmark: bnlearn
-
+  
+algorithm:
+  n_jobs: 2
+  
 # Общие настройки
 output_dir: "results"
 output_filename: "results.csv"
@@ -15,7 +18,7 @@ resume: False
 
 # Настройки bootstrap
 bootstrap: true
-n_bootstraps: 1
+n_bootstraps: 2
 seed: 42
 
 # Настройки визуализации

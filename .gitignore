@@ -23,8 +23,10 @@ multirun/
 # Project Results & Profiling
 results/
 plots/
-*.csv
-*.png
+plots/*.csv
+plots/*.png
+results/*.csv
+results/*.png
 
 # System
 .DS_Store
@@ -32,8 +34,25 @@ Thumbs.db
 
 # data files
 /data
-# Packaging
-dist/
+/bootstrap_samples/
+/algo_results/
+/data_old/
+/input_samples/
+
+# build c libs files
+/data
+
+# build docs files
+/docs/build/
+/docs/_build/
+
+# Build artifacts
 build/
+dist/
 *.egg-info/
+
+# Local synthetic/library verification harness and generated artefacts
+/local_checks/
+
+# Packaging
 .pytest_cache/

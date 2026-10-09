@@ -1,5 +1,5 @@
 # Core Scientific Stack
-numpy==2.2.6
+numpy==1.26.4
 pandas==2.3.3
 scipy==1.15.3
 scikit-learn==1.7.2
@@ -14,12 +14,10 @@ tqdm==4.67.1
 # Parallelization
 joblib==1.5.2
 
-# Causal Discovery & Visualization
-causal-learn==0.1.4.3
+# Visualization
 pydot==4.0.1
 graphviz==0.21
 matplotlib==3.10.7
 
-# Dependencies often required by causal-learn internals
-momentchi2==0.1.8
+# Profiling (optional): WHYDRA_PROFILE=1 enables @profile in independence_tests.py
 line_profiler==5.0.0

@@ -1,17 +1,17 @@
+from __future__ import annotations
 import numpy as np
 from itertools import combinations, chain
-from typing import Iterable, List, Sequence, Set, Tuple, Any, Dict
+from typing import Iterable, List, Sequence, Set, Tuple, Dict, Optional
 
 from tqdm.auto import tqdm
-from causallearn.graph.GeneralGraph import GeneralGraph as CLGeneralGraph
 from joblib import Parallel, delayed
 
-from ..graph_core import CausalGraph, CIT, Edge, Endpoint
+from ..graph_core import CausalGraph, CIT, Endpoint
 from .profiler import profiler
 from .standalone_pc_stable import (
     orient_colliders,
     apply_meek_rules,
-    convert_to_causallearn_graph,
+    convert_to_general_graph,
     _append_sepset,
 )
 
@@ -209,7 +209,7 @@ class RAIStableLearner:
             self.cg.G.remove_edge(edge)
 
     # --- Core steps (iterative) -----------------------------------------
-    def learn_structure(self, n_jobs: int = 1) -> CLGeneralGraph:
+    def learn_structure(self, n_jobs: int = 1):
         """
         High-level entry.
         """
@@ -220,17 +220,12 @@ class RAIStableLearner:
             import os
             n_jobs = os.cpu_count() or 1
 
-        if n_jobs==1:
-            with profiler.time_block("standalone_rai_total", tags={"algo": "sequential"}):
-                self._learn_iteratively_seq(en_nodes, ex_nodes)
-                self._maximally_orient_edges()
-        else:
-            with profiler.time_block("standalone_rai_total", tags={"algo": "parallel_batch_level"}):
-                self._learn_iteratively(en_nodes, ex_nodes, 0, n_jobs=n_jobs)
-                # Финальная максимальная ориентация для согласованности
-                self._maximally_orient_edges()
+        # Всегда используем Stable-логику (батчевую), даже для 1 ядра
+        with profiler.time_block("standalone_rai_total", tags={"algo": "rai_stable"}):
+            self._learn_iteratively(en_nodes, ex_nodes, 0, n_jobs=n_jobs)
+            self._maximally_orient_edges()
 
-        return convert_to_causallearn_graph(self.cg)
+        return convert_to_general_graph(self.cg)
 
     def _learn_iteratively_seq(self, en_nodes_initial: Set[int], ex_nodes_initial: Set[int]) -> None:
 
@@ -254,11 +249,12 @@ class RAIStableLearner:
             # split и пуш в стек в обратном порядке, чтобы сохранить порядок рекурсии
             d_nodes, a_nodes = self._split_ancestors_descendant(en_nodes)
 
-            # Сначала пушим d_nodes, чтобы он обработался после ancestor_sets (как в рекурсии)
-            stack.append((set(d_nodes), set(a_nodes) | set(ex_nodes), order + 1))
+            # Сначала пушим d_nodes, чтобы он обработался после a_nodes (как в рекурсии)
+            if d_nodes:
+                stack.append((set(d_nodes), set(a_nodes) | set(ex_nodes), order + 1))
 
-            # Предки будут извлечены и обработаны до d_nodes, поскольку
-            # добавляются в стек позже.
+            # Затем a_nodes
+            # (они будут извлечены/обработаны до d_nodes, потому что добавлены позже)
             if a_nodes:
                 stack.append((set(a_nodes), set(ex_nodes), order + 1))
 
@@ -545,7 +541,7 @@ def rai_stable(
     data: np.ndarray,
     alpha: float = 0.05,
     indep_test: str = "fisherz",
-    node_names: List[str] | None = None,
+    node_names: Optional[List[str]] = None,
     n_jobs: int = -1,
     verbose: bool = False,
     **kwargs,

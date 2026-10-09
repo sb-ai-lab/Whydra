@@ -1,0 +1,5 @@
+_target_: whydra.algorithms.wrappers.StandaloneFCIStableCached
+alpha: 0.05
+indep_test: fisherz
+use_ci_cache: true
+# n_jobs: 16

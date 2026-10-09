@@ -1,17 +1,14 @@
 import numpy as np
 from tqdm import tqdm
-from joblib import Parallel, delayed, cpu_count
+from joblib import Parallel, delayed
 from multiprocessing import cpu_count
+from concurrent.futures import ThreadPoolExecutor
+from collections.abc import Mapping
 
 from itertools import combinations, permutations
 import math
 
-from causallearn.graph.GraphNode import GraphNode as CLGraphNode
-from causallearn.graph.Edge import Edge as CLEdge
-from causallearn.graph.Endpoint import Endpoint as CLEndpoint
-from causallearn.graph.GeneralGraph import GeneralGraph as CLGeneralGraph
-
-from ..graph_core import CausalGraph
+from ..graph_core import CausalGraph, fisher_z_from_corr
 from .profiler import profiler
 
 # ------------------------------
@@ -45,9 +42,14 @@ def ci_worker(args):
     x, y, S, ci_func = args
     return x, y, S, ci_func(x, y, S)
 
-def _skeleton_worker_fci(x, cg, G1, depth, alpha, pMax_row):
+def _skeleton_worker_fci(x, cg, G1, depth, alpha, pMax_row, stable=True):
     """
     Worker function for FCI parallel processing.
+
+    ``stable`` governs the early exit exactly as it does in the sequential
+    path and in causal-learn's FAS: without it the search stops at the first
+    separating set, with it every conditioning set at this depth is examined
+    because the stored separating set is their union.
     """
     edge_removals = []
     sepset_updates = []
@@ -77,9 +79,104 @@ def _skeleton_worker_fci(x, cg, G1, depth, alpha, pMax_row):
                 if pval >= alpha:
                     edge_removals.append((x, y))
                     sepset_updates.append((x, y, S))
+                    if not stable:
+                        break
+
+    return edge_removals, sepset_updates, pmax_updates, tests_performed
+
+
+def _ci_cache_key_pair(i, j, S):
+    a, b = (int(i), int(j)) if i <= j else (int(j), int(i))
+    return a, b, tuple(sorted(int(v) for v in S))
+
+
+def _cached_fisher_z(local_cache, corr_matrix, n_samples, x, y, S):
+    key = _ci_cache_key_pair(x, y, S)
+    cached = local_cache.get(key)
+    if cached is not None:
+        return cached
+    pval = fisher_z_from_corr(corr_matrix, n_samples, x, y, S)
+    local_cache[key] = pval
+    return pval
+
+
+def _process_fci_direction_fisherz(x, y, G1, corr_matrix, n_samples, depth, alpha, pmax_value,
+                                   local_cache, stable=True):
+    edge_removals = []
+    sepset_updates = []
+    pmax_updates = []
+    tests_performed = 0
+
+    nbrs = np.where(G1[x, :] != 0)[0]
+    nbrs = nbrs[nbrs != y]
+
+    if len(nbrs) >= depth:
+        current_pmax = pmax_value
+        for S in combinations(nbrs, depth):
+            tests_performed += 1
+            pval = _cached_fisher_z(local_cache, corr_matrix, n_samples, x, y, S)
+            if pval > current_pmax:
+                current_pmax = pval
+                pmax_updates.append((x, y, pval))
+            if pval >= alpha:
+                edge_removals.append((x, y))
+                sepset_updates.append((x, y, S))
+                if not stable:
                     break
 
     return edge_removals, sepset_updates, pmax_updates, tests_performed
+
+
+def _skeleton_worker_fci_fisherz_edge_chunk(edges, G1, pMax, corr_matrix, n_samples, depth, alpha,
+                                            stable=True):
+    edge_removals = []
+    sepset_updates = []
+    pmax_updates = []
+    tests_performed = 0
+    local_cache = {}
+
+    for x, y in edges:
+        for a, b in ((x, y), (y, x)):
+            out = _process_fci_direction_fisherz(
+                a, b, G1, corr_matrix, n_samples, depth, alpha, pMax[a, b], local_cache, stable
+            )
+            dir_edge_removals, dir_sepset_updates, dir_pmax_updates, dir_tests = out
+            edge_removals.extend(dir_edge_removals)
+            sepset_updates.extend(dir_sepset_updates)
+            pmax_updates.extend(dir_pmax_updates)
+            tests_performed += dir_tests
+
+    return edge_removals, sepset_updates, pmax_updates, tests_performed
+
+
+def _fci_edge_cost(G1, x, y, depth):
+    cost = 0
+    nbrs_x = np.where(G1[x, :] != 0)[0]
+    nbrs_x = nbrs_x[nbrs_x != y]
+    if len(nbrs_x) >= depth:
+        cost += math.comb(len(nbrs_x), depth)
+
+    nbrs_y = np.where(G1[y, :] != 0)[0]
+    nbrs_y = nbrs_y[nbrs_y != x]
+    if len(nbrs_y) >= depth:
+        cost += math.comb(len(nbrs_y), depth)
+
+    return cost
+
+
+def _balanced_edge_chunks(edges, G1, depth, n_chunks):
+    weighted_edges = [(_fci_edge_cost(G1, x, y, depth), (x, y)) for x, y in edges]
+    weighted_edges.sort(key=lambda item: item[0], reverse=True)
+
+    chunks = [[] for _ in range(n_chunks)]
+    loads = [0 for _ in range(n_chunks)]
+    for cost, edge in weighted_edges:
+        idx = min(range(n_chunks), key=lambda i: loads[i])
+        chunks[idx].append(edge)
+        loads[idx] += cost
+
+    return [chunk for chunk in chunks if chunk]
+
 
 class SkeletonDiscovery:
     def __init__(
@@ -89,7 +186,10 @@ class SkeletonDiscovery:
         stable: bool = True,
         n_jobs: int = 1,
         show_progress: bool = True,
-        verbose: bool = False
+        verbose: bool = False,
+        parallel_backend: str = "threads",
+        process_ci_info=None,
+        protected_edges=(),
     ):
         self.cg = cg
         self.alpha = alpha
@@ -97,13 +197,38 @@ class SkeletonDiscovery:
         self.n_jobs = n_jobs
         self.show_progress = show_progress
         self.verbose = verbose
+        self.parallel_backend = parallel_backend
+        self.process_ci_info = process_ci_info
+        self.protected_edges = {
+            frozenset((int(x), int(y))) for x, y in protected_edges
+        }
+        self._parallel_executor = None
+        self.ci_tests_performed = 0
 
         self.no_of_var = len(self.cg.nodes)
         # We work directly on cg.G.graph
         self.G = self.cg.G.graph
         self.G1 = np.copy(self.G)
 
-    def run(self) -> CLGeneralGraph:
+    def _validate_fci_parallel_config(self):
+        if self.n_jobs == 1 or self.parallel_backend != "processes":
+            return
+
+        info = self.process_ci_info
+        if not isinstance(info, Mapping) or info.get("method") != "fisherz":
+            raise ValueError(
+                "run_fci with parallel_backend='processes' requires "
+                "process_ci_info with method='fisherz'"
+            )
+
+        missing = sorted({"corr_matrix", "n_samples"}.difference(info))
+        if missing:
+            raise ValueError(
+                "run_fci with parallel_backend='processes' has incomplete "
+                f"process_ci_info; missing required keys: {missing}"
+            )
+
+    def run(self):
         """
         Stage 1: Skeleton discovery.
         """
@@ -130,10 +255,12 @@ class SkeletonDiscovery:
 
         self._close_progress_bar(pbar)
 
-        return self.convert_to_causallearn_graph()
+        return self.convert_to_general_graph()
 
 
     def run_fci(self):
+        self._validate_fci_parallel_config()
+
         sepset = {}
         for i in permutations([i for i in range(len(self.cg.nodes))], 2):
             sepset[i] = set()
@@ -148,29 +275,49 @@ class SkeletonDiscovery:
 
         depth = -1
 
-        # while not done and depth <= self.m_max:
-        while self._continue_search(depth):
-            depth += 1
-            if self.show_progress:
-                self._reset_progress_bar(pbar, depth)
+        if self.n_jobs != 1:
+            if self.parallel_backend == "processes":
+                self._parallel_executor = Parallel(
+                    n_jobs=self.n_jobs,
+                    backend="loky",
+                    max_nbytes="10K",
+                )
+                self._parallel_executor.__enter__()
+            else:
+                max_workers = self.n_jobs if self.n_jobs > 0 else cpu_count()
+                self._parallel_executor = ThreadPoolExecutor(max_workers=max_workers)
 
-            edge_removal, sepset = self._process_depth_fci(
-                depth=depth,
-                pbar=pbar,
-                sepset=sepset
-            )
+        try:
+            # while not done and depth <= self.m_max:
+            while self._continue_search(depth):
+                depth += 1
+                if self.show_progress:
+                    self._reset_progress_bar(pbar, depth)
 
-            # print(f'cg.G.graph skeleton {self.cg.G.graph}')
-            # print(f'G skeleton {self.G}')
-            # print(f'cg.sepset skeleton {sepset}')
+                edge_removal, sepset = self._process_depth_fci(
+                    depth=depth,
+                    pbar=pbar,
+                    sepset=sepset
+                )
 
-            if self.stable:
-                self._apply_edge_removals(edge_removal)
+                # print(f'cg.G.graph skeleton {self.cg.G.graph}')
+                # print(f'G skeleton {self.G}')
+                # print(f'cg.sepset skeleton {sepset}')
 
-            self.G1 = np.copy(self.G)
+                if self.stable:
+                    self._apply_edge_removals(edge_removal)
 
-            if self.show_progress:
-                pbar.refresh()
+                self.G1 = np.copy(self.G)
+
+                if self.show_progress:
+                    pbar.refresh()
+        finally:
+            if self._parallel_executor is not None:
+                if isinstance(self._parallel_executor, ThreadPoolExecutor):
+                    self._parallel_executor.shutdown(wait=True)
+                else:
+                    self._parallel_executor.__exit__(None, None, None)
+                self._parallel_executor = None
 
         self._close_progress_bar(pbar)
 
@@ -182,7 +329,7 @@ class SkeletonDiscovery:
         pbar,
         sepset,
     ):
-        print(f'depth = {depth}')
+        # print(f'depth = {depth}')
 
 
         if self.n_jobs != 1:
@@ -203,13 +350,16 @@ class SkeletonDiscovery:
             if self.show_progress:
                 pbar.update()
 
-            neigh_x = self.cg.neighbors(x)
-            if len(neigh_x) < depth:
+            # Fast-path guard on the LIVE graph: self.G aliases cg.G.graph, so
+            # when stable=False it already reflects removals made earlier in this
+            # depth. Inside _process_node_at_depth_fci the edges are filtered on
+            # self.G too, but conditioning sets come from the self.G1 snapshot,
+            # so this check is not redundant with the len(nbrs) >= depth one there.
+            if len(self.cg.neighbors(x)) < depth:
                 continue
 
             removals_for_x, sepset= self._process_node_at_depth_fci(
                 x=x,
-                neigh_x=neigh_x,
                 depth=depth,
                 sepset=sepset,
             )
@@ -222,7 +372,6 @@ class SkeletonDiscovery:
     def _process_node_at_depth_fci(
         self,
         x: int,
-        neigh_x: np.ndarray,
         depth: int,
         sepset,
     ):
@@ -240,52 +389,28 @@ class SkeletonDiscovery:
             # nbrs = self.cg.neighbors(x)
 
             if len(nbrs) >= depth:
-                if len(nbrs) > depth:
-                    done = False
-
                 for S in combinations(nbrs, depth):
                     pval = self.cg.ci_test(x, y, S)
-
                     if self.cg.pMax[x, y] < pval:
                         self.cg.pMax[x, y] = pval
 
                     if pval >= self.alpha:
-                        # Remove edge (set to NULL=0)
-                        # G[x, y] = 0
-                        # G[y, x] = 0
+                        # Remove edge (set to NULL=0) now, or at the end of the
+                        # depth when running stable.
                         if not self.stable:
                             self._remove_edge_immediately(x, y)
                         else:
                             self._register_edge_removal(edge_removal, x, y)
 
-                        sepset[(x, y)] = S
-                        sepset[(y, x)] = S
-
-                        self._append_sepset(x, y, S)
-                        break
+                        self._record_sepset(sepset, x, y, S)
+                        if not self.stable:
+                            break
         return edge_removal, sepset
 
 
-    def convert_to_causallearn_graph(self) -> CLGeneralGraph:
-        cl_nodes = [CLGraphNode(node.name) for node in self.cg.nodes]
-        cl_graph = CLGeneralGraph(cl_nodes)
-
-        for i in range(self.cg.G.num_vars):
-            for j in range(i + 1, self.cg.G.num_vars):
-                end_j_val = self.cg.G.graph[i, j]
-                end_i_val = self.cg.G.graph[j, i]
-
-                if end_j_val != 0 or end_i_val != 0:
-                    def map_end(val):
-                        if val == 1: return CLEndpoint.ARROW
-                        if val == -1: return CLEndpoint.TAIL
-                        if val == 2: return CLEndpoint.CIRCLE
-                        return CLEndpoint.NULL
-
-                    cl_edge = CLEdge(cl_nodes[i], cl_nodes[j], map_end(end_i_val), map_end(end_j_val))
-                    cl_graph.add_edge(cl_edge)
-
-        return cl_graph
+    def convert_to_general_graph(self):
+        """Return the local graph maintained by the algorithm."""
+        return self.cg.G
 
     def _init_progress_bar(self, show_progress: bool):
         return tqdm(total=self.no_of_var) if show_progress else None
@@ -352,14 +477,64 @@ class SkeletonDiscovery:
                  nbrs = nbrs[nbrs != y]
                  if len(nbrs) >= depth:
                      total_ops_estimate += math.comb(len(nbrs), depth)
-        
-        print(f"Depth {depth}: Estimated max CI tests: {total_ops_estimate}")
 
-        print(f"Jobs in parallel: {self.n_jobs}")
-        results_list = Parallel(n_jobs=self.n_jobs)(
-            delayed(_skeleton_worker_fci)(x, self.cg, self.G, depth, self.alpha, self.cg.pMax[x])
-            for x in range(self.no_of_var)
-        )
+        if self.verbose:
+            print(f"Depth {depth}: Estimated max CI tests: {total_ops_estimate}")
+            print(f"Jobs in parallel: {self.n_jobs}")
+        if (
+            self.parallel_backend == "processes"
+            and self.process_ci_info is not None
+            and self.process_ci_info.get("method") == "fisherz"
+        ):
+            effective_n_jobs = self.n_jobs if self.n_jobs > 0 else cpu_count()
+            edges = [
+                (x, y)
+                for x in range(self.no_of_var)
+                for y in range(x + 1, self.no_of_var)
+                if self.G[x, y] != 0 or self.G[y, x] != 0
+            ]
+            edge_chunks = _balanced_edge_chunks(edges, self.G1, depth, effective_n_jobs)
+            executor = self._parallel_executor or Parallel(
+                n_jobs=effective_n_jobs,
+                backend="loky",
+                max_nbytes="10K",
+            )
+            results_list = executor(
+                delayed(_skeleton_worker_fci_fisherz_edge_chunk)(
+                    edge_chunk,
+                    self.G1,
+                    self.cg.pMax,
+                    self.process_ci_info["corr_matrix"],
+                    self.process_ci_info["n_samples"],
+                    depth,
+                    self.alpha,
+                    self.stable,
+                )
+                for edge_chunk in edge_chunks
+            )
+        else:
+            owns_executor = self._parallel_executor is None
+            executor = self._parallel_executor or ThreadPoolExecutor(
+                max_workers=self.n_jobs if self.n_jobs > 0 else cpu_count()
+            )
+            try:
+                futures = [
+                    executor.submit(
+                        _skeleton_worker_fci,
+                        x,
+                        self.cg,
+                        self.G1,
+                        depth,
+                        self.alpha,
+                        self.cg.pMax[x],
+                        self.stable,
+                    )
+                    for x in range(self.no_of_var)
+                ]
+                results_list = [future.result() for future in futures]
+            finally:
+                if owns_executor:
+                    executor.shutdown(wait=True)
 
         if self.show_progress and pbar is not None:
             pbar.update(self.no_of_var)
@@ -384,11 +559,11 @@ class SkeletonDiscovery:
 
             # Apply sepset updates
             for (x, y, S) in sepset_updates:
-                sepset[(x, y)] = S
-                sepset[(y, x)] = S
-                self._append_sepset(x, y, S)
+                self._record_sepset(sepset, x, y, S)
 
-        print(f"Depth {depth}: Actual CI tests performed: {total_tests_actual}")
+        if self.verbose:
+            print(f"Depth {depth}: Actual CI tests performed: {total_tests_actual}")
+        self.ci_tests_performed += total_tests_actual
         return aggregated_edge_removals, sepset
 
     def _process_depth_parallel(self, depth, pbar):
@@ -398,10 +573,29 @@ class SkeletonDiscovery:
         effective_n_jobs = self.n_jobs if self.n_jobs > 0 else cpu_count()
 
         # Run parallel jobs for each variable x
-        results_list = Parallel(n_jobs=effective_n_jobs)(
-            delayed(_skeleton_worker)(x, self.cg, depth, self.alpha)
-            for x in range(self.no_of_var)
-        )
+        if self.parallel_backend == "processes":
+            executor = self._parallel_executor or Parallel(
+                n_jobs=effective_n_jobs,
+                backend="loky",
+            )
+            results_list = executor(
+                delayed(_skeleton_worker)(x, self.cg, depth, self.alpha)
+                for x in range(self.no_of_var)
+            )
+        else:
+            owns_executor = self._parallel_executor is None
+            executor = self._parallel_executor or ThreadPoolExecutor(
+                max_workers=effective_n_jobs
+            )
+            try:
+                futures = [
+                    executor.submit(_skeleton_worker, x, self.cg, depth, self.alpha)
+                    for x in range(self.no_of_var)
+                ]
+                results_list = [future.result() for future in futures]
+            finally:
+                if owns_executor:
+                    executor.shutdown(wait=True)
 
         # Update progress bar
         if self.show_progress and pbar is not None:
@@ -463,41 +657,24 @@ class SkeletonDiscovery:
         return None
 
 
-    def _test_pair_over_subsets(
-        self,
-        x: int,
-        y: int,
-        candidates: np.ndarray,
-        depth: int,
-        edge_removal_acc: list,
-    ) -> bool:
-        """
-        For a given pair (x, y) and its candidate neighbors (without y),
-        iterate over all conditioning sets S with |S| = depth.
-        If we find p_val > alpha:
-          - if not stable: immediately remove edge and record sepset.
-          - if stable: record in edge_removal_acc for later removal and record sepset.
-        Returns True if a separating set has been found (and loop should break),
-        False otherwise.
-        """
-        for S in combinations(candidates, depth):
-            p_val = self.cg.ci_test(x, y, S)
-            if p_val > self.alpha:
-                if not self.stable:
-                    self._remove_edge_immediately(x, y)
-                else:
-                    self._register_edge_removal(edge_removal_acc, x, y)
+    def _is_protected(self, x: int, y: int) -> bool:
+        """True when background knowledge requires this edge to survive the search.
 
-                self._append_sepset(x, y, S)
-                # As in the original: break after first sepset for (x, y) at this depth.
-                return True
-
-        return False
+        A protected pair is excluded from BOTH halves of a deletion: the edge
+        itself and the separating set that justified deleting it. Recording the
+        sepset of an edge that stays is not harmless bookkeeping — collider
+        orientation later asks whether the middle node is in the separating set
+        of the outer pair, so a sepset left behind for a surviving edge silently
+        changes the orientation of triples around it.
+        """
+        return frozenset((int(x), int(y))) in self.protected_edges
 
     def _remove_edge_immediately(self, x: int, y: int):
         """
         Remove edge between x and y from cg.G if it exists.
         """
+        if self._is_protected(x, y):
+            return
         edge = self.cg.G.get_edge(self.cg.nodes[x], self.cg.nodes[y])
         if edge:
             self.cg.G.remove_edge(edge)
@@ -506,6 +683,8 @@ class SkeletonDiscovery:
         """
         Register (x, y) and (y, x) for later removal in stable mode.
         """
+        if self._is_protected(x, y):
+            return
         edge_removal_acc.append((x, y))
         edge_removal_acc.append((y, x))
 
@@ -516,12 +695,57 @@ class SkeletonDiscovery:
         for (x, y) in set(edge_removal):
             self._remove_edge_immediately(x, y)
 
+    def _record_sepset(self, sepset, x, y, S):
+        """Single entry point for the flat `sepset` map, mirroring causal-learn's FAS.
+
+        causal-learn applies two different rules, and `udag2pag` is tuned to
+        them, so both are reproduced here rather than picked from:
+
+        * ``stable=False`` — the search stops at the first separating set and
+          that one set is stored (``FAS.py``, the ``if not stable`` branch);
+        * ``stable=True``  — every conditioning set that separates the pair is
+          examined and the stored value is the UNION of their members
+          (``FAS.py``: ``sepsets.add(s)``, then the ``origin_set`` rebuild over
+          the whole of ``cg.sepset[x, y]``).
+
+        The union is therefore deliberate, not an accident of a missing
+        ``break``. R0 in `udag2pag` decides colliders by asking whether y is in
+        the separating set of (x, z); answering that the same way causal-learn
+        does is what keeps our PAGs identical to the reference implementation.
+        Dropping to a single set under ``stable=True`` measurably diverges on
+        bnlearn/child and bnlearn/water.
+
+        What this method does fix is consistency: both branches store a `set`
+        of node indices, and `stable` — not `n_jobs` — is the only thing that
+        selects between them, so sequential and parallel backends now agree.
+        The full per-pair list of sets stays in `cg.sepset` via `_append_sepset`.
+
+        Under ``stable=True`` (what every algorithm entry point uses) skeleton
+        and sepsets are identical for any `n_jobs`. Under ``stable=False`` edges
+        disappear mid-sweep, so which separating set is reached still depends on
+        traversal order — that order dependence is what `stable` exists to
+        remove, and it is present in causal-learn for the same reason.
+        """
+        if self._is_protected(x, y):
+            return
+        members = {int(v) for v in S}
+        if self.stable:
+            sepset[(x, y)] = set(sepset.get((x, y), set())) | members
+            sepset[(y, x)] = set(sepset.get((y, x), set())) | members
+        else:
+            sepset[(x, y)] = set(members)
+            sepset[(y, x)] = set(members)
+        self._append_sepset(x, y, S)
+
+    #временно довавил проверку на дубликаты, так как у нас иначе будет 2 раза один и тот же сепсет
     def _append_sepset(self, x, y, S):
+        if self._is_protected(x, y):
+            return
         if self.cg.sepset[x, y] is None:
             self.cg.sepset[x, y] = [S]
-        else:
+        elif S not in self.cg.sepset[x, y]:
             self.cg.sepset[x, y].append(S)
         if self.cg.sepset[y, x] is None:
             self.cg.sepset[y, x] = [S]
-        else:
+        elif S not in self.cg.sepset[y, x]:
             self.cg.sepset[y, x].append(S)

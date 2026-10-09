@@ -9,11 +9,7 @@ import matplotlib.pyplot as plt
 from whydra.evaluation.graph_utils import load_ground_truth
 from whydra.evaluation.metrics import calculate_metrics, get_adj_matrix
 
-# Импорты causal-learn
-from causallearn.graph.GraphNode import GraphNode
-from causallearn.graph.GeneralGraph import GeneralGraph
-from causallearn.graph.Edge import Edge
-from causallearn.graph.Endpoint import Endpoint
+from whydra.algorithms.graph_core import Edge, Endpoint, GeneralGraph, Node as GraphNode
 
 
 # ===============================================================

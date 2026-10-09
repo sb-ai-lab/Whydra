@@ -1,5 +1,5 @@
 import numpy as np
-from typing import List
+from typing import List, Optional
 
 from .nodes import Node
 from .edges import Edge
@@ -15,6 +15,11 @@ class GeneralGraph:
 
     def get_num_nodes(self):
         return self.num_vars
+
+    def get_endpoint(self, node1: Node, node2: Node) -> Endpoint:
+        """Return the endpoint mark at ``node1`` on the edge to ``node2``."""
+        i, j = self.node_map[node1], self.node_map[node2]
+        return Endpoint(int(self.graph[j, i]))
     def add_edge(self, edge: Edge):
         i = self.node_map[edge.node1]
         j = self.node_map[edge.node2]
@@ -27,16 +32,24 @@ class GeneralGraph:
         self.graph[i, j] = 0
         self.graph[j, i] = 0
 
-    def get_edge(self, node1: Node, node2: Node) -> Edge | None:
+    def get_edge(self, node1: Node, node2: Node) -> Optional[Edge]:
         i, j = self.node_map[node1], self.node_map[node2]
         if self.graph[i, j] == 0 and self.graph[j, i] == 0:
             return None
         return Edge(node1, node2, Endpoint(self.graph[j, i]), Endpoint(self.graph[i, j]))
 
-    def is_adjacent_to(self, node1: Node, node2: Node) -> bool:
-        i = self.node_map[node1]
-        j = self.node_map[node2]
+    def has_edge(self, i: int, j: int) -> bool:
+        """Single definition of "nodes i and j are adjacent", by index.
+
+        An endpoint mark on either side means the edge exists. Checking only
+        one side used to make `get_graph_edges` disagree with `is_adjacent_to`
+        on a one-sided mark: the edge was visible to one API and invisible to
+        the other.
+        """
         return self.graph[i, j] != 0 or self.graph[j, i] != 0
+
+    def is_adjacent_to(self, node1: Node, node2: Node) -> bool:
+        return self.has_edge(self.node_map[node1], self.node_map[node2])
 
     def add_undirected_edge(self, node1: Node, node2: Node):
         self.add_edge(Edge(node1, node2, Endpoint.TAIL, Endpoint.TAIL))
@@ -59,7 +72,7 @@ class GeneralGraph:
         edges = []
         for i in range(self.num_vars):
             for j in range(i + 1, self.num_vars):
-                if self.graph[i, j] != 0:
+                if self.has_edge(i, j):
                     edges.append(self.get_edge(self.nodes[i], self.nodes[j]))
         return edges
 

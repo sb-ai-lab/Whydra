@@ -3,17 +3,27 @@ from itertools import combinations, permutations
 from tqdm.auto import tqdm
 
 from ..graph_core import CausalGraph, Edge, Endpoint
+from ...background_knowledge import (
+    BKPhase,
+    MatrixEncoding,
+    apply_bk_checkpoint,
+    bk_allows_edge,
+    orientation_guard_for,
+)
 from .profiler import profiler
-from causallearn.graph.GraphNode import GraphNode as CLGraphNode
-from causallearn.graph.Edge import Edge as CLEdge
-from causallearn.graph.Endpoint import Endpoint as CLEndpoint
-from causallearn.graph.GeneralGraph import GeneralGraph as CLGeneralGraph
-
-def skeleton_discovery(cg: CausalGraph, alpha: float, stable: bool, verbose: bool, show_progress: bool):
+def skeleton_discovery(cg: CausalGraph, alpha: float, stable: bool, verbose: bool, show_progress: bool,
+                       protected_edges=()):
     """
     Этап 1: Поиск скелета.
+
+    ``protected_edges`` — пары, которые требует background knowledge. Такое
+    ребро не удаляется и sepset для него не записывается: пара остаётся
+    смежной, и записанный sepset только мешал бы ориентации коллайдеров.
     """
     no_of_var = len(cg.nodes)
+    protected_edges = {
+        frozenset((int(x), int(y))) for x, y in protected_edges
+    }
     depth = -1
     pbar = tqdm(total=no_of_var) if show_progress else None
 
@@ -42,6 +52,8 @@ def skeleton_discovery(cg: CausalGraph, alpha: float, stable: bool, verbose: boo
                         for S in combinations(Neigh_x_noy, depth):
                             p_val = cg.ci_test(x, y, S)
                             if p_val > alpha:
+                                if frozenset((int(x), int(y))) in protected_edges:
+                                    break
                                 if not stable:
                                     edge = cg.G.get_edge(cg.nodes[x], cg.nodes[y])
                                     if edge: cg.G.remove_edge(edge)
@@ -58,6 +70,8 @@ def skeleton_discovery(cg: CausalGraph, alpha: float, stable: bool, verbose: boo
 
                 if stable:
                     for (x, y) in set(edge_removal):
+                        if frozenset((int(x), int(y))) in protected_edges:
+                            continue
                         edge = cg.G.get_edge(cg.nodes[x], cg.nodes[y])
                         if edge: cg.G.remove_edge(edge)
 
@@ -106,6 +120,9 @@ def orient_colliders(cg: CausalGraph, priority: int = 2):
 
 
 def _orient_edge(cg, source, target):
+    if not bk_allows_edge(getattr(cg, "bk_guard", None), cg.G.graph,
+                          source, target, Endpoint.TAIL.value, Endpoint.ARROW.value):
+        return False
     edge = cg.G.get_edge(cg.nodes[source], cg.nodes[target])
     if edge:
         cg.G.remove_edge(edge)
@@ -129,6 +146,9 @@ def _orient_edge_conflict_aware(cg, source, target):
         return
 
     if cg.is_undirected(source, target):
+        if not bk_allows_edge(getattr(cg, "bk_guard", None), cg.G.graph,
+                              source, target, Endpoint.TAIL.value, Endpoint.ARROW.value):
+            return False
         edge = cg.G.get_edge(cg.nodes[source], cg.nodes[target])
         if edge:
             cg.G.remove_edge(edge)
@@ -136,23 +156,25 @@ def _orient_edge_conflict_aware(cg, source, target):
         return
 
 
-def apply_meek_rules(cg: CausalGraph):
+def apply_meek_rules(cg: CausalGraph, background_knowledge=None):
     """
     Этап 3: Правила Мика (Meek rules).
+
+    Выход из цикла — по фактическому изменению матрицы, а не по флагу
+    «условие правила сработало»: иначе применённые между проходами фоновые
+    знания не были бы учтены в критерии сходимости.
     """
     loop = True
     while loop:
-        loop = False
+        before_pass = cg.G.graph.copy()
 
         # R1
         triples = cg.find_unshielded_triples()
         for (i, j, k) in triples:
             if cg.is_fully_directed(i, j) and cg.is_undirected(j, k):
                 _orient_edge_conflict_aware(cg, j, k)
-                loop = True
             elif cg.is_fully_directed(k, j) and cg.is_undirected(j, i):
                 _orient_edge_conflict_aware(cg, j, i)
-                loop = True
 
         # R2
         triangles = cg.find_triangles()
@@ -161,7 +183,6 @@ def apply_meek_rules(cg: CausalGraph):
             for a, b, c in permutations(nodes_tri, 3):
                 if cg.is_fully_directed(a, b) and cg.is_fully_directed(b, c) and cg.is_undirected(a, c):
                     _orient_edge_conflict_aware(cg, a, c)
-                    loop = True
 
         # R3
         kites = cg.find_kites()
@@ -169,31 +190,25 @@ def apply_meek_rules(cg: CausalGraph):
             if cg.is_fully_directed(j, l) and cg.is_fully_directed(k, l) and cg.is_undirected(i, l):
                 if cg.is_undirected(i, j) and cg.is_undirected(i, k):
                     _orient_edge_conflict_aware(cg, i, l)
-                    loop = True
+
+        apply_bk_checkpoint(
+            background_knowledge,
+            cg.G.graph,
+            [node.name for node in cg.nodes],
+            phase=BKPhase.BETWEEN_ORIENTATION,
+            checkpoint="after_meek_pass",
+            encoding=MatrixEncoding.STANDARD,
+            graph_kind="cpdag",
+            previous=before_pass,
+        )
+        loop = not np.array_equal(before_pass, cg.G.graph)
 
     return cg
 
 
-def convert_to_causallearn_graph(local_cg: CausalGraph) -> CLGeneralGraph:
-    cl_nodes = [CLGraphNode(node.name) for node in local_cg.nodes]
-    cl_graph = CLGeneralGraph(cl_nodes)
-
-    for i in range(local_cg.G.num_vars):
-        for j in range(i + 1, local_cg.G.num_vars):
-            end_j_val = local_cg.G.graph[i, j]
-            end_i_val = local_cg.G.graph[j, i]
-
-            if end_j_val != 0 or end_i_val != 0:
-                def map_end(val):
-                    if val == 1: return CLEndpoint.ARROW
-                    if val == -1: return CLEndpoint.TAIL
-                    if val == 2: return CLEndpoint.CIRCLE
-                    return CLEndpoint.NULL
-
-                cl_edge = CLEdge(cl_nodes[i], cl_nodes[j], map_end(end_i_val), map_end(end_j_val))
-                cl_graph.add_edge(cl_edge)
-
-    return cl_graph
+def convert_to_general_graph(local_cg: CausalGraph):
+    """Return the local graph maintained by the algorithm."""
+    return local_cg.G
 
 
 def pc_stable(
@@ -207,14 +222,50 @@ def pc_stable(
         show_progress: bool = True,
         **kwargs
 ):
+    node_names = [node.name for node in cg.nodes]
+    apply_bk_checkpoint(
+        background_knowledge,
+        cg.G.graph,
+        node_names,
+        phase=BKPhase.PRE_SEARCH,
+        checkpoint="before_skeleton",
+        encoding=MatrixEncoding.STANDARD,
+        graph_kind="cpdag",
+    )
+    # Guard уровня записи: чекпоинт после фазы направление исправит, но
+    # коллайдер, потерянный из-за запрещённой стрелки, уже не вернёт.
+    cg.bk_guard = orientation_guard_for(background_knowledge, node_names)
+    protected_edges = ()
+    if background_knowledge is not None:
+        protected_edges = background_knowledge.required_pairs(
+            node_names, phase=BKPhase.PRE_SEARCH
+        )
+
     with profiler.time_block("full_pc_algorithm", tags={"algo": "sequential"}):
-        skeleton_discovery(cg, alpha, stable, verbose, show_progress)
+        skeleton_discovery(cg, alpha, stable, verbose, show_progress,
+                           protected_edges=protected_edges)
         orient_colliders(cg, priority=uc_priority)
-        apply_meek_rules(cg)
+        apply_bk_checkpoint(
+            background_knowledge,
+            cg.G.graph,
+            node_names,
+            phase=BKPhase.BETWEEN_ORIENTATION,
+            checkpoint="after_colliders",
+            encoding=MatrixEncoding.STANDARD,
+            graph_kind="cpdag",
+        )
+        apply_meek_rules(cg, background_knowledge=background_knowledge)
+        apply_bk_checkpoint(
+            background_knowledge,
+            cg.G.graph,
+            node_names,
+            phase=BKPhase.POST_ORIENTATION,
+            checkpoint="after_orientation",
+            encoding=MatrixEncoding.STANDARD,
+            graph_kind="cpdag",
+        )
 
     class ResultWrapper:
         def __init__(self, g): self.G = g
 
-    final_cl_graph = convert_to_causallearn_graph(cg)
-    return final_cl_graph
-    # return ResultWrapper(final_cl_graph)
+    return convert_to_general_graph(cg)

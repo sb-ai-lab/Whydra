@@ -148,6 +148,8 @@ class PCAlgorithm:
             return False
 
         if self.cg.is_undirected(source, target):
+            # causal-learn Meek skips an orientation whose target is already an ancestor of the source.
+            if self.cg.is_ancestor_of(target, source): return False
             if not self._bk_allows(source, target, Endpoint.TAIL, Endpoint.ARROW):
                 return False
             edge = self.cg.G.get_edge(self.cg.nodes[source], self.cg.nodes[target])

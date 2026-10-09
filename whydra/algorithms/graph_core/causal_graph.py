@@ -69,6 +69,44 @@ class CausalGraph:
     def is_bidirected(self, i, j):
         return self.G.graph[i, j] == Endpoint.ARROW.value and self.G.graph[j, i] == Endpoint.ARROW.value
 
+    def is_ancestor_of(self, i: int, j: int) -> bool:
+        """Check whether i is an ancestor of j over fully directed edges.
+
+        A directed path i -> ... -> j must consist exclusively of fully
+        directed edges (graph[u, v] == ARROW and graph[v, u] == TAIL);
+        bidirected and undirected edges do not count.  A node is never an
+        ancestor of itself.
+
+        Args:
+            i: candidate ancestor node index.
+            j: candidate descendant node index.
+
+        Returns:
+            bool: True if such a directed path exists and i != j.
+        """
+        if i == j:
+            return False
+        graph = self.G.graph
+        visited = np.zeros(graph.shape[0], dtype=bool)
+        visited[i] = True
+        queue = [i]
+        head = 0
+        while head < len(queue):
+            u = queue[head]
+            head += 1
+            children = np.where(
+                (graph[u, :] == Endpoint.ARROW.value)
+                & (graph[:, u] == Endpoint.TAIL.value)
+            )[0]
+            for v in children:
+                v = int(v)
+                if v == j:
+                    return True
+                if not visited[v]:
+                    visited[v] = True
+                    queue.append(v)
+        return False
+
     def find_unshielded_triples(self):
         triples = []
         adj = self.G.graph

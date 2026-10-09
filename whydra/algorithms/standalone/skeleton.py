@@ -14,10 +14,36 @@ from .profiler import profiler
 # ------------------------------
 # Worker-функция (вынести НА УРОВЕНЬ МОДУЛЯ, не внутрь класса!)
 # ------------------------------
-def _skeleton_worker(x, cg, depth, alpha):
+def _skeleton_worker(
+    x,
+    cg,
+    depth,
+    alpha,
+    stable=True,
+    protected_edges=frozenset(),
+):
     """
     Worker function to process a single variable x.
-    Checks for independence with neighbors.
+
+    Checks for independence of x with its neighbours at the given depth.
+    In stable mode (causal-learn parity) every conditioning set of the
+    current depth is tested and one union of separating-set members is
+    recorded per separated pair for collider orientation;
+    in non-stable mode the search stops at the first separating set.
+    A pair protected by background knowledge also stops at the first
+    separating set: its edge survives and its sepsets are discarded.
+
+    Args:
+        x: node index to process.
+        cg: causal graph carrying the CI test.
+        depth: size of the conditioning sets.
+        alpha: significance level.
+        stable: whether to enumerate all separating sets (PC-stable).
+        protected_edges: pairs ``frozenset((x, y))`` kept by background knowledge.
+
+    Returns:
+        Tuple (edge_removals, sepset_updates), with one (x, y, union)
+        record per separated pair; union is a sorted tuple of Python ints.
     """
     edge_removals = []
     sepset_updates = []
@@ -28,13 +54,22 @@ def _skeleton_worker(x, cg, depth, alpha):
 
     for y in neigh_x:
         neigh_x_noy = np.delete(neigh_x, np.where(neigh_x == y))
+        protected = frozenset((int(x), int(y))) in protected_edges
 
+        found = False
+        members = set()
         for S in combinations(neigh_x_noy, depth):
             p_val = cg.ci_test(x, y, S)
             if p_val > alpha:
-                edge_removals.append((x, y))
-                sepset_updates.append((x, y, S))
-                break
+                if not found:
+                    edge_removals.append((x, y))
+                    found = True
+                members.update(int(v) for v in S)
+                if not stable or protected:
+                    break
+
+        if found:
+            sepset_updates.append((x, y, tuple(sorted(members))))
 
     return edge_removals, sepset_updates
 
@@ -568,7 +603,14 @@ class SkeletonDiscovery:
 
     def _process_depth_parallel(self, depth, pbar):
         """
-        Parallel version of _process_depth.
+        Process a PC depth in parallel and merge separating-member unions.
+
+        Args:
+            depth: size of the conditioning sets.
+            pbar: optional progress bar.
+
+        Returns:
+            list: registered edge removals for stable mode.
         """
         effective_n_jobs = self.n_jobs if self.n_jobs > 0 else cpu_count()
 
@@ -579,7 +621,9 @@ class SkeletonDiscovery:
                 backend="loky",
             )
             results_list = executor(
-                delayed(_skeleton_worker)(x, self.cg, depth, self.alpha)
+                delayed(_skeleton_worker)(
+                    x, self.cg, depth, self.alpha, self.stable, self.protected_edges
+                )
                 for x in range(self.no_of_var)
             )
         else:
@@ -589,7 +633,10 @@ class SkeletonDiscovery:
             )
             try:
                 futures = [
-                    executor.submit(_skeleton_worker, x, self.cg, depth, self.alpha)
+                    executor.submit(
+                        _skeleton_worker, x, self.cg, depth, self.alpha, self.stable,
+                        self.protected_edges,
+                    )
                     for x in range(self.no_of_var)
                 ]
                 results_list = [future.result() for future in futures]
@@ -612,7 +659,7 @@ class SkeletonDiscovery:
                      self._remove_edge_immediately(x, y)
 
             for (x, y, S) in sepsets:
-                self._append_sepset(x, y, S)
+                self._merge_sepset_union(x, y, S)
 
         return aggregated_edge_removals
 
@@ -624,38 +671,96 @@ class SkeletonDiscovery:
     ):
         """
         Process one node x at the given depth.
-        Returns local edge_removal list (used only when stable=True).
+
+        For every neighbour y, the union of separating-set members at the
+        current depth is collected (stable mode) and the (x, y) edge removal
+        is registered once if at least one separating set exists.
+
+        Args:
+            x: node index to process.
+            neigh_x: stable snapshot of the neighbours of x.
+            depth: size of the conditioning sets.
+
+        Returns:
+            list: local edge_removal list (used only when stable=True).
         """
         local_edge_removal = []
 
         for y in neigh_x:
             # IMPORTANT: do not skip a pair just because we already added (x, y)
-            # to edge_removal; needed to collect ALL sepsets in stable mode.
+            # to edge_removal; needed to union all separating members in stable mode.
             neigh_x_noy = np.delete(neigh_x, np.where(neigh_x == y))
 
-            S = self._find_separating_set(x, y, neigh_x_noy, depth)
+            members = self._find_separating_union(x, y, neigh_x_noy, depth)
 
-            if S is not None:
+            if members is not None:
                 if not self.stable:
                     self._remove_edge_immediately(x, y)
                 else:
                     self._register_edge_removal(local_edge_removal, x, y)
 
-                self._append_sepset(x, y, S)
+                self._merge_sepset_union(x, y, members)
 
         return local_edge_removal
 
-    def _find_separating_set(self, x, y, candidates, depth):
+    def _find_separating_union(
+        self,
+        x,
+        y,
+        candidates,
+        depth,
+    ) -> tuple | None:
+        """Find the union of separating-set members for a pair at one depth.
+
+        Stable mode tests every conditioning set. Non-stable mode and
+        protected pairs stop at the first separating set.
+
+        Args:
+            x: first node of the pair.
+            y: second node of the pair.
+            candidates: neighbours of x excluding y.
+            depth: size of the conditioning sets.
+
+        Returns:
+            tuple | None: sorted Python int members, or None if no set
+            separates the pair. An empty tuple denotes depth-zero separation.
         """
-        Core logic to find a separating set S of size `depth` for (x, y).
-        Returns S if found, None otherwise.
-        """
+        found = False
+        members = set()
         for S in combinations(candidates, depth):
             p_val = self.cg.ci_test(x, y, S)
             if p_val > self.alpha:
-                return S
-        return None
+                found = True
+                members.update(int(v) for v in S)
+                if not self.stable or self._is_protected(x, y):
+                    break
+        return tuple(sorted(members)) if found else None
 
+    def _merge_sepset_union(
+        self,
+        x,
+        y,
+        members,
+    ):
+        """Merge PC separating members into one tuple in both directions.
+
+        Protected pairs keep their edge and receive no separating-set entry.
+
+        Args:
+            x: first node index.
+            y: second node index.
+            members: separating-set members to merge as Python integers.
+
+        Returns:
+            None: updates both symmetric cells in place, preserving empty sets.
+        """
+        if self._is_protected(x, y):
+            return
+        members = {int(v) for v in members}
+        for i, j in ((x, y), (y, x)):
+            current = self.cg.sepset[i, j]
+            union = members if current is None else members.union(current[0])
+            self.cg.sepset[i, j] = [tuple(sorted(union))]
 
     def _is_protected(self, x: int, y: int) -> bool:
         """True when background knowledge requires this edge to survive the search.

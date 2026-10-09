@@ -1,0 +1,7 @@
+_target_: whydra.algorithms.wrappers.StandaloneFCIStableParallelCached
+alpha: 0.05
+indep_test: fisherz
+use_ci_cache: true
+# n_jobs: 16
+# skeleton_backend: threads
+# pdsep_backend: threads

@@ -1,14 +1,59 @@
 import os
 import glob
 import subprocess
+import importlib
+import sys
+import yaml
 import pandas as pd
 from pathlib import Path
+
+
+# Бенчмарки, исключённые из прогона. Чтобы вернуть — убрать имя из списка.
+#
+# munin: кейса с таким именем нет в BenchmarkCaseRepository (проверено:
+# 58 доступных кейсов, ни одного munin), поэтому оба конфига запускают
+# ровно тот же перебор, что и остальные, только впустую тратят часы.
+SKIPPED_BENCHMARKS = [
+    "bnlearn_munin",
+    "bnlearn_munin_with_truth",
+]
 
 
 def get_config_names(config_dir):
     """Получает список имен конфигов (без .yaml) из указанной папки."""
     files = glob.glob(os.path.join(config_dir, "*.yaml"))
     return [Path(f).stem for f in files]
+
+
+def get_unavailable_reason(algo_name, config_dir="configs/algorithm"):
+    """Проверяет доступность алгоритма по конфигу, возвращает причину недоступности или None."""
+    try:
+        config_path = os.path.join(config_dir, f"{algo_name}.yaml")
+        try:
+            with open(config_path, "r", encoding="utf-8") as f:
+                config = yaml.safe_load(f)
+        except Exception as e:
+            return f"не удалось прочитать конфиг: {type(e).__name__}"
+
+        if not config or "_target_" not in config:
+            return "в конфиге нет _target_"
+
+        target = config["_target_"]
+        module_name, _, class_name = target.rpartition(".")
+        if not module_name:
+            return f"в _target_ нет пути к модулю: {target}"
+
+        try:
+            module = importlib.import_module(module_name)
+        except Exception as e:
+            return f"модуль {module_name} не импортируется: {type(e).__name__}"
+
+        if not hasattr(module, class_name):
+            return f"класс {class_name} отсутствует в {module_name}"
+
+        return None
+    except Exception as e:
+        return f"неожиданная ошибка: {type(e).__name__}"
 
 
 def run_experiment(algo_name, bench_name):
@@ -72,18 +117,41 @@ def aggregate_results():
 if __name__ == "__main__":
     # 1. Ищем доступные конфиги
     algorithms = get_config_names("configs/algorithm")
-    benchmarks = get_config_names("configs/benchmark")
+    all_benchmarks = get_config_names("configs/benchmark")
+
+    benchmarks = [b for b in all_benchmarks if b not in SKIPPED_BENCHMARKS]
+    skipped_benchmarks = [b for b in all_benchmarks if b in SKIPPED_BENCHMARKS]
 
     print(f"Found algorithms: {algorithms}")
     print(f"Found benchmarks: {benchmarks}")
+    if skipped_benchmarks:
+        print(f"Skipped benchmarks: {skipped_benchmarks}")
 
-    # 2. Запускаем все комбинации
-    # Вы можете исключить какие-то алгоритмы вручную, если нужно
-    # algorithms = [a for a in algorithms if "stable" in a]
+    # 2. Фильтруем алгоритмы по доступности классов
+    available_algos = []
+    unavailable_algos = []
 
     for algo in algorithms:
+        reason = get_unavailable_reason(algo)
+        if reason is None:
+            available_algos.append(algo)
+        else:
+            unavailable_algos.append((algo, reason))
+
+    print(f"Available algorithms: {available_algos}")
+    if unavailable_algos:
+        print("Unavailable algorithms:")
+        for algo, reason in unavailable_algos:
+            print(f"  - {algo}: {reason}")
+
+    if not available_algos:
+        print("No available algorithms to run. Exiting.")
+        sys.exit(0)
+
+    # 3. Запускаем все комбинации
+    for algo in available_algos:
         for bench in benchmarks:
             run_experiment(algo, bench)
 
-    # 3. Собираем итоговую таблицу
+    # 4. Собираем итоговую таблицу
     aggregate_results()

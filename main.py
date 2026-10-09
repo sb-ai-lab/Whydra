@@ -7,6 +7,7 @@ import numpy as np
 import time
 from tqdm import tqdm
 import sys
+import pickle
 from pathlib import Path
 
 np.set_printoptions(threshold=sys.maxsize, linewidth=200)
@@ -14,6 +15,11 @@ np.set_printoptions(threshold=sys.maxsize, linewidth=200)
 from whydra.evaluation.metrics import calculate_metrics
 from whydra.evaluation.graph_utils import load_ground_truth, draw_graph, adj_matrix_to_graph, get_adj_matrix
 from whydra.algorithms.standalone.profiler import profiler
+
+from whydra.data.case_repository import BenchmarkCaseRepository
+
+
+
 
 
 def cleanup_intermediate_files(directories):
@@ -38,7 +44,7 @@ def generate_bootstrap_samples(data, n_bootstraps, samples_dir, loader=None):
 
     print(f"Generating {n_bootstraps} bootstrap samples in {samples_dir}...")
     for i in range(n_bootstraps):
-        sample_path = os.path.join(samples_dir, f"sample_{i}.npy")
+        sample_path = os.path.join(samples_dir, f"sample_{i}.pickle")
         # Generate if it doesn't exist
         if not os.path.exists(sample_path):
             if i == 0:
@@ -48,8 +54,9 @@ def generate_bootstrap_samples(data, n_bootstraps, samples_dir, loader=None):
                 indices = np.random.choice(data.shape[0], sample_size, replace=False)
                 sample_data = data[indices]
 
-            # Save as a plain NumPy array (no pickle) for safe reloading
-            np.save(sample_path, sample_data, allow_pickle=False)
+            # Save pickle for reliable reloading
+            with open(sample_path, 'wb') as f:
+                pickle.dump(sample_data, f)
 
             # Optional: Keep the text format if loader is provided, for compatibility with legacy logging
             if loader:
@@ -69,31 +76,29 @@ def process_single_benchmark(i, sample_path, algo, bname, n_bootstrap, n_jobs, m
     Returns the estimated graph and execution time.
     """
     # Construct result filename
-    filename = f"{method_name}_{bname}_{n_bootstrap}_{i}_{n_jobs}.npz"
+    filename = f"{method_name}_{bname}_{n_bootstrap}_{i}_{n_jobs}.pickle"
     file_algo_path = os.path.join(result_dir, filename)
     os.makedirs(result_dir, exist_ok=True)
 
     execution_time = 0.0
 
-    # If result already exists, load it (data-only cache: adjacency matrix + node names)
+    # If result already exists, load it
     if os.path.exists(file_algo_path):
-        with np.load(file_algo_path, allow_pickle=False) as cached:
-            est_G = adj_matrix_to_graph(cached["adj_matrix"],
-                                        [str(n) for n in cached["node_names"]])
+        with open(file_algo_path, 'rb') as f:
+            est_G = pickle.load(f)
     else:
         # Otherwise load sample and run algo
-        sample_data = np.load(sample_path, allow_pickle=False)
+        with open(sample_path, 'rb') as f:
+            sample_data = pickle.load(f)
 
         start_time = time.perf_counter()
         est_G = algo.run(sample_data)
         end_time = time.perf_counter()
         execution_time = end_time - start_time
 
-        # Save result as plain arrays (no pickle): adjacency matrix + node names
-        node_names = [n.get_name() for n in est_G.get_nodes()]
-        np.savez(file_algo_path,
-                 adj_matrix=get_adj_matrix(est_G),
-                 node_names=np.array(node_names))
+        # Save result
+        with open(file_algo_path, 'wb') as f:
+            pickle.dump(est_G, f)
 
     return est_G, execution_time
 
@@ -212,23 +217,38 @@ def main(cfg: DictConfig):
     target_indep_test = cfg.benchmark.get("indep_test", "fisherz")
 
     method_name = cfg.algorithm._target_.split('.')[-1]
-    library_name = "whydra"
+    library_name = "causal_graphs"
 
     print(f"Running algorithm: {method_name}")
     print(f"Using independence test: {target_indep_test}")
 
-    loader = hydra.utils.instantiate(cfg.benchmark.loader)
+    loader2 = BenchmarkCaseRepository()
+    # print(f'available cases = {loader2.list_available_cases()}')
+    # loader = hydra.utils.instantiate(cfg.benchmark.loader)
     algo = hydra.utils.instantiate(cfg.algorithm, indep_test=target_indep_test)
+
+    cases_to_calculate = list(loader2.list_available_cases())
+    print(f'cases_to_calculate {cases_to_calculate}')
 
     results = []
 
-    for bname in cfg.benchmark.names:
-        print(f"Processing {bname}...")
+    for bname in cases_to_calculate:
+        case_name = bname.split('/')[-1]
+        benchmark_name = "/".join(bname.split('/')[:-1])  # ВАЖНО: строка, не list
+        print(f"Processing {case_name}, {benchmark_name}...")
 
         try:
             # 1. Загрузка данных и Ground Truth
-            data = loader.load_data(bname)
-            gt_path = loader.load_ground_truth_path(bname)
+            # data = loader.load_data(bname)
+            data = next(iter(loader2.get_case_datasets(case_name=case_name,benchmark_name=benchmark_name).values()))
+            gt_path = loader2.get_case_ground_truth(case_name=case_name,benchmark_name=benchmark_name)
+
+            # print('data loader = ', data[:10], type(data))
+            # print(type(data2))
+            # print('data loader2 = ', data2[:10])
+            # print('gt_data2', gt_path2, type(gt_path2))
+
+            # gt_path = loader.load_ground_truth_path(bname)
             true_G = load_ground_truth(gt_path)
             n_nodes = true_G.get_num_nodes()
 
@@ -236,7 +256,7 @@ def main(cfg: DictConfig):
             # Структура: plots / ИмяАлгоритма / ИмяБенчмарка
             current_plot_dir = None
             if save_plots:
-                current_plot_dir = os.path.join(cfg.plots_dir, method_name, bname)
+                current_plot_dir = os.path.join(cfg.plots_dir, method_name, case_name)
 
                 # Сохраняем истинный граф (Ground Truth) для сравнения
                 draw_graph(true_G, current_plot_dir, "ground_truth")
@@ -248,28 +268,29 @@ def main(cfg: DictConfig):
             # --- STAGE 1: Data Preparation ---
             # ---------------------------------------------------------------
             # Create a dedicated directory for bootstrap samples for this benchmark
-            samples_dir = os.path.join("input_samples", bname)
-            algo_results_dir_base = os.path.join("algo_results", bname)
+            samples_dir = os.path.join("input_samples", case_name)
+            algo_results_dir_base = os.path.join("algo_results", case_name)
 
             if not cfg.get("resume", True):
-                print(f"Resume disabled. Cleaning up intermediate files for {bname}...")
+                print(f"Resume disabled. Cleaning up intermediate files for {case_name}...")
                 cleanup_intermediate_files([samples_dir, algo_results_dir_base])
 
             if cfg.get("bootstrap", True):
                 print(f"Preparing data in {samples_dir}...")
-                sample_paths = generate_bootstrap_samples(data, n_runs, samples_dir, loader)
+                sample_paths = generate_bootstrap_samples(data, n_runs, samples_dir, loader2)
 
             else:
                 os.makedirs(samples_dir, exist_ok=True)
                 print(f"Bootstrap disabled. Using original data.")
-                sample_path = os.path.join(samples_dir, "sample_0.npy")
+                sample_path = os.path.join(samples_dir, "sample_0.pickle")
                 sample_paths = [sample_path]
                 n_runs = 1
-                np.save(sample_path, data, allow_pickle=False)
+                with open(sample_path, 'wb') as f:
+                    pickle.dump(data, f)
 
                 # Optional: Keep the text format if loader is provided, for compatibility with legacy logging
                 try:
-                    loader.save_data(data, samples_dir, f"sample_data_0.txt")
+                    loader2.save_data(data, samples_dir, f"sample_data_0.txt")
                 except Exception:
                     pass  # Ignore if save_data is not compatible or fails
 
@@ -277,14 +298,14 @@ def main(cfg: DictConfig):
             # --- STAGE 2: Algorithm Execution ---
             # ---------------------------------------------------------------
             # Now iterate over the prepared samples and run the algorithm
-            iterator = tqdm(range(n_runs), desc=f"Benchmarking {bname}")
+            iterator = tqdm(range(n_runs), desc=f"Benchmarking {case_name}")
             estimated_graphs = []
 
             for i in iterator:
 
-                algo_results_dir = os.path.join("algo_results", bname)
+                algo_results_dir = os.path.join("algo_results", case_name)
                 est_G, duration = process_single_benchmark(
-                    i, sample_paths[i], algo, bname, n_runs, n_jobs, method_name, algo_results_dir
+                    i, sample_paths[i], algo, case_name, n_runs, n_jobs, method_name, algo_results_dir
                 )
 
                 # Log execution time (only if we actually ran the algorithm)
@@ -305,7 +326,7 @@ def main(cfg: DictConfig):
             if cfg.get("bootstrap", True):
                 # Consensus Matrix from Bootstrap
                 consensus_matrix = calculate_consensus_matrix(estimated_graphs, tau,
-                                                              save_path=os.path.join("algo_results", bname,
+                                                              save_path=os.path.join("algo_results", case_name,
                                                                                      "matrix.txt"))
                 # print("DEBUG: Consensus Matrix (mean of adjacency matrices):")
                 # print(consensus_matrix)
@@ -315,7 +336,7 @@ def main(cfg: DictConfig):
             # ---------------------------------------------------------------
             filename_for_boot = Path(cfg.output_filename_for_bootstrap).stem
             filename_suffix = Path(cfg.output_filename_for_bootstrap).suffix
-            output_filename_for_bootstrap=f"{filename_for_boot}_{method_name}_{bname}{filename_suffix}"
+            output_filename_for_bootstrap=f"{filename_for_boot}_{method_name}_{case_name}{filename_suffix}"
             save_metrics_for_by_bootstrap(estimated_graphs, true_G, cfg.output_dir, output_filename_for_bootstrap)
 
             metrics_buffer = run_metrics_evaluation(
@@ -325,7 +346,7 @@ def main(cfg: DictConfig):
             df_metrics = pd.DataFrame(metrics_buffer)
 
             res_row = {
-                "bname": bname,
+                "bname": case_name,
                 "n_bootstraps": n_runs,
                 "parallel_n_jobs": n_jobs,
                 "method": method_name,
@@ -352,7 +373,7 @@ def main(cfg: DictConfig):
                 cleanup_intermediate_files([samples_dir, algo_results_dir_base])
 
         except Exception as e:
-            print(f"Error on {bname}: {e}")
+            print(f"Error on {case_name}: {e}")
             import traceback
             traceback.print_exc()
 

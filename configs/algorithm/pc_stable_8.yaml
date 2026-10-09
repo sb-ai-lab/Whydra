@@ -1,0 +1,4 @@
+_target_: whydra.algorithms.wrappers.StandalonePCStable
+alpha: 0.05
+indep_test: fisherz
+n_jobs: 8

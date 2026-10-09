@@ -1,5 +1,6 @@
 import numpy as np
 from itertools import combinations
+from typing import List
 
 from .nodes import Node
 from .edges import Edge
@@ -8,7 +9,20 @@ from .general_graph import GeneralGraph
 
 
 class CausalGraph:
-    def __init__(self, no_of_var: int, node_names: list[str]):
+    def __init__(self, no_of_var: int, node_names: List[str]):
+        node_names = list(node_names)
+        if len(node_names) != no_of_var:
+            raise ValueError(
+                f"no_of_var={no_of_var} does not match len(node_names)={len(node_names)}"
+            )
+        # Node equality and hashing go by name, and GeneralGraph keys its index
+        # map on the nodes themselves. Two nodes sharing a name would collapse
+        # into one entry, silently redirecting every operation on the first to
+        # the index of the second and dropping edges without a word.
+        duplicates = sorted({name for name in node_names if node_names.count(name) > 1})
+        if duplicates:
+            raise ValueError(f"node_names must be unique; duplicated: {duplicates}")
+
         self.nodes = [Node(name) for name in node_names]
         self.G = GeneralGraph(self.nodes)
         for i in range(no_of_var):
@@ -64,7 +78,7 @@ class CausalGraph:
             if len(neighbors) < 2:
                 continue
             for i, k in combinations(neighbors, 2):
-                if adj[i, k] == 0:
+                if not self.G.has_edge(i, k):
                     triples.append((i, j, k))
         return triples
 
@@ -94,7 +108,7 @@ class CausalGraph:
             if len(neighbors_l) < 2:
                 continue
             for j, k in combinations(neighbors_l, 2):
-                if self.G.graph[j, k] == 0:
+                if not self.G.has_edge(j, k):
                     neigh_j = set(np.where(self.G.graph[j, :] != 0)[0])
                     neigh_k = set(np.where(self.G.graph[k, :] != 0)[0])
                     neigh_l = set(neighbors_l)

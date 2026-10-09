@@ -1,15 +1,15 @@
+from __future__ import annotations
+
 import numpy as np
 from itertools import combinations, chain
 from typing import Iterable, List, Sequence, Set, Tuple
-
-from causallearn.graph.GeneralGraph import GeneralGraph as CLGeneralGraph
 
 from ..graph_core import CausalGraph, CIT, Endpoint
 from .profiler import profiler
 from .standalone_pc_stable import (
     orient_colliders,
     apply_meek_rules,
-    convert_to_causallearn_graph,
+    convert_to_general_graph,
     _append_sepset,
 )
 
@@ -101,7 +101,7 @@ class RAIStableLearner:
             self.cg.G.remove_edge(edge)
 
     # --- Core steps ------------------------------------------------------
-    def learn_structure(self) -> CLGeneralGraph:
+    def learn_structure(self):
         en_nodes = set(range(self.n_vars))
         ex_nodes: Set[int] = set()
 
@@ -109,7 +109,7 @@ class RAIStableLearner:
             self._learn_recursively(en_nodes, ex_nodes, order=0)
             self._maximally_orient_edges()
 
-        return convert_to_causallearn_graph(self.cg)
+        return convert_to_general_graph(self.cg)
 
     def _learn_recursively(self, en_nodes: Set[int], ex_nodes: Set[int], order: int) -> None:
         if not en_nodes:

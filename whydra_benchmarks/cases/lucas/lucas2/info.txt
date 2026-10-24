@@ -1,0 +1,25 @@
+Соответствие:
+
+    X1: Lung Cancer
+
+    X2: Smoking
+
+    X3: Yellow Fingers
+
+    X4: Anxiety
+
+    X5: Peer Pressure
+
+    X6: Genetics
+
+    X7: Attention Disorder
+
+    X8: Born an Even Day
+
+    X9: Car Accident
+
+    X10: Fatigue
+
+    X11: Allergy
+
+    X12: Coughing

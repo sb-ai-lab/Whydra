@@ -16,7 +16,7 @@ class CausalTimeLoader(DatasetLoader):
         path = os.path.join(self.data_dir, name, "gen_data.npy")
         if not os.path.exists(path):
             raise FileNotFoundError(f"Data file not found: {path}")
-        # Методы для временных рядов обычно ожидают (Time, Node) или список таких массивов.
+        # Tigramite и многие методы ожидают (Time, Node) или список таких массивов.
         # Наш интерфейс pipeline ожидает np.ndarray.
         # Мы вернем 3D массив как есть, а Wrapper алгоритма сам разберется, как его "съесть".
         

@@ -1,0 +1,12 @@
+/knowledge
+addtemporal
+
+1 Region Month
+2 Temperature Ws Rain RH
+3 FFMC DMC DC
+4 ISI BUI
+5 FWI
+
+forbiddirect
+
+requiredirect

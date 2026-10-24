@@ -1,0 +1,44 @@
+deploy-pc_stable-munin:
+  extends: .base
+  stage: deploy
+  needs:
+    - build-benchmark
+  script:
+    - docker compose -f benchmark.docker-compose.yml --env-file .env run -d --name algorithm-bench-pc_stable-munin algorithm-benchmark python main.py  algorithm=pc_stable_16 bootstrap=true n_bootstraps=5 benchmark=bnlearn_child
+  when: manual
+
+deploy-pc_stable-subsampling:
+  extends: .base
+  stage: deploy
+  needs:
+    - build-benchmark
+  script:
+    - docker compose -f benchmark.docker-compose.yml --env-file .env run -d --name algorithm-bench-pc_stable-subsampling algorithm-benchmark python main.py  algorithm=pc_stable_16 bootstrap=true n_bootstraps=5 benchmark=bnlearn_munin_with_truth
+  when: manual
+
+deploy-fci_stable-munin:
+  extends: .base
+  stage: deploy
+  needs:
+    - build-benchmark
+  script:
+    - docker compose -f benchmark.docker-compose.yml --env-file .env run -d --name algorithm-bench-fci_stable-munin algorithm-benchmark python main.py  algorithm=fci_stable_16 bootstrap=true n_bootstraps=5 benchmark=bnlearn_child
+  when: manual
+
+deploy-fci_stable-subsampling:
+  extends: .base
+  stage: deploy
+  needs:
+    - build-benchmark
+  script:
+    - docker compose -f benchmark.docker-compose.yml --env-file .env run -d --name algorithm-bench-fci_stable-subsampling algorithm-benchmark python main.py  algorithm=fci_stable_16 bootstrap=true n_bootstraps=5 benchmark=bnlearn_child
+  when: manual
+
+remove-benchmarks-munin:
+  extends: .base
+  stage: down
+  script:
+    - set -a && source .env
+    - docker rm -f algorithm-bench-pc_stable-munin algorithm-bench-fci_stable-munin
+  when: manual
+

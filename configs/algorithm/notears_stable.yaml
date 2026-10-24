@@ -1,0 +1,2 @@
+_target_: whydra.algorithms.wrappers.StandaloneNoTearsStable
+alpha: 0.05

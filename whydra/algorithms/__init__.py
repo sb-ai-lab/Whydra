@@ -8,6 +8,8 @@ from ..background_knowledge import (
 )
 from .base import CausalAlgorithm
 from .wrappers import (
+    DagGNN,
+    OrigJPCMCIPlus,
     ParallelPCStable,
     StandaloneCFCIStable,
     StandaloneCFCIStableParallelCached,
@@ -17,6 +19,8 @@ from .wrappers import (
     StandaloneFCIStableCached,
     StandaloneFCIStableParallelCached,
     StandaloneGFCIStable,
+    StandaloneNoBearsStable,
+    StandaloneNoTearsStable,
     StandalonePCStable,
     StandaloneRAIOptimized,
     StandaloneRAIStable,
@@ -47,6 +51,10 @@ __all__ = [
     "StandaloneFCIPlusStableParallelCached",
     "StandaloneRAIOptimized",
     "StandaloneRAIStable",
+    "StandaloneNoTearsStable",
+    "StandaloneNoBearsStable",
+    "OrigJPCMCIPlus",
+    "DagGNN",
     "available_standalone_algorithms",
     "create_standalone_algorithm",
     "run_standalone_algorithm",

@@ -1,0 +1,3 @@
+# Optional dependencies used only by reference/comparison checks.
+-r requirements.txt
+causal-learn==0.1.4.5

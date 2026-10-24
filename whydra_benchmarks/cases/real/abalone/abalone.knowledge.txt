@@ -1,0 +1,16 @@
+/knowledge
+addtemporal
+
+1  Rings Sex
+2  Shucked Shell Viscera
+3  Whole
+
+forbiddirect
+Diam Sex
+Length Sex
+Height Sex
+Diam Rings
+Length Rings
+Height Rings
+
+requiredirect

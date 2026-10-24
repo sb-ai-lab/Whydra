@@ -1,0 +1,26 @@
+# ── Stage 1: сборка документации ──────────────────────────────────────────
+FROM python:3.11-slim AS builder
+
+WORKDIR /project
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc make \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY . .
+
+RUN which sphinx-build || echo "sphinx-build NOT FOUND"
+RUN find /project -type f | head -30
+RUN make -C docs html
+# RUN make html
+
+# ── Stage 2: отдаём через nginx ────────────────────────────────────────────
+FROM nginx:alpine
+
+# путь совпадает с WORKDIR + BUILDDIR из Makefile
+COPY --from=builder /project/docs/build/html /usr/share/nginx/html
+
+EXPOSE 80

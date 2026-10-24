@@ -1,0 +1,12 @@
+loader:
+  _target_: causal_graphs.data.loaders.CausalTimeLoader
+  data_dir: "D:/Datasets/BIMAI/causaltime_gen_ver1.0"
+
+# Тест независимости здесь не используется напрямую в main.py для этого алгоритма,
+# так как J-PCMCI+ имеет свой встроенный тест, но поле нужно для совместимости.
+indep_test: parcorr
+
+names:
+  # - traffic
+  - medical  # Можно раскомментировать, если хотите запустить и на других
+  # - pm25

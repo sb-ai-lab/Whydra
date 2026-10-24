@@ -1,0 +1,3 @@
+_target_: whydra.algorithms.wrappers.OrigJPCMCIPlus
+alpha: 0.05
+tau_max: 2

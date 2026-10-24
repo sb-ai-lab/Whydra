@@ -1,7 +1,7 @@
 loader:
-  _target_: whydra.data.BnLearnLoader
-  data_dir: "./whydra_benchmarks/cases/bnlearn/{name}/input/{name}.txt"
-  ground_truth_dir: "./whydra_benchmarks/cases/bnlearn/{name}/ground.truth/{name}.graph.txt"
+  _target_: causal_graphs.data.loaders.BnLearnLoader
+  data_dir: "D:/usr/sr00018/PycharmProjects/casual_graph/modules/pipeline/benchmarks/cases/bnlearn/child/input/{name}.txt"
+  ground_truth_dir: "D:/usr/sr00018/PycharmProjects/casual_graph/modules/pipeline/benchmarks/cases/bnlearn/child/ground.truth/{name}.graph.txt"
 
 # тест хи-квадрат, так как данные дискретные
 indep_test: chisq

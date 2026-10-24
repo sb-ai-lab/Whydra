@@ -29,7 +29,7 @@ from .pag_rules import faith_check, minUncovCircPath, minUncovPdPath
 
 # ============================================================
 #  Локальные копии вспомогательных функций FCI.
-#  Перенесены из прежнего fci_algo.py.
+#  Перенесены из fci_algo.py ветки sber_new_algorithms.
 #  Держим их здесь, чтобы файл не зависел от fci_algo.py:
 #  там лежит эталонная реализация FCI из ветки dev, без
 #  background_knowledge / protected_edges / rule_stats.

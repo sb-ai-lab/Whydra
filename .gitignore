@@ -53,6 +53,3 @@ dist/
 
 # Local synthetic/library verification harness and generated artefacts
 /local_checks/
-
-# Packaging
-.pytest_cache/

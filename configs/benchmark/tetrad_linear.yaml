@@ -1,9 +1,9 @@
 loader:
-  _target_: whydra.data.TetradLoader
+  _target_: causal_graphs.data.loaders.TetradLoader
   # Путь к папке, где лежат data_linear_*.txt
-  data_dir: "./datasets/Tetrad"
+  data_dir: "D:/Datasets/BIMAI/Tetrad"
   # Путь к папке Ground truth внутри Tetrad
-  ground_truth_dir: "./datasets/Tetrad/Ground truth"
+  ground_truth_dir: "D:/Datasets/BIMAI/Tetrad/Ground truth"
 
 # Для непрерывных данных используем Fisher-Z
 indep_test: fisherz

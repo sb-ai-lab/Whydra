@@ -1,0 +1,108 @@
+variables:
+  DOCKER_DRIVER: "overlay2"
+
+stages:
+  - documentation
+  - build
+  - deploy
+  - down
+
+build-docs:
+  extends: .base
+  stage: documentation
+  script:
+    - docker compose -f docs.docker-compose.yml up -d --build
+  when: manual
+
+.base:
+  tags:
+    - ds-docker
+  image: docker
+  before_script:
+    - mkdir logs
+
+pre-build-benchmark:
+  extends: .base
+  stage: build
+  script:
+    - docker build -f Dockerfile.pre --tag pre-build-algorithm:latest .
+  when: manual
+
+build-benchmark:
+  extends: .base
+  stage: build
+  script:
+    - docker compose -f benchmark.docker-compose.yml --env-file .env build
+  when: manual
+
+deploy-pc_stable-bnlearn:
+  extends: .base
+  stage: deploy
+  needs:
+    - build-benchmark
+  script:
+    - docker compose -f benchmark.docker-compose.yml --env-file .env run -d --name algorithm-bench-pc_stable-bnlearn algorithm-benchmark python main.py  algorithm=pc_stable benchmark=bnlearn
+  when: manual
+
+deploy-dag_gnn-bnlearn:
+  extends: .base
+  stage: deploy
+  needs:
+    - build-benchmark
+  script:
+    - docker compose -f benchmark.docker-compose.yml --env-file .env run -d --name algorithm-bench-dag_gnn-bnlearn algorithm-benchmark python main.py  algorithm=dag_gnn benchmark=bnlearn
+  when: manual
+
+deploy-rai_stable-bnlearn:
+  extends: .base
+  stage: deploy
+  needs:
+    - build-benchmark
+  script:
+    - docker compose -f benchmark.docker-compose.yml --env-file .env run -d --name algorithm-bench-rai_stable-bnlearn algorithm-benchmark python main.py  algorithm=rai_stable benchmark=bnlearn
+  when: manual
+
+deploy-nobears_stable-bnlearn:
+  extends: .base
+  stage: deploy
+  needs:
+    - build-benchmark
+  script:
+    - docker compose -f benchmark.docker-compose.yml --env-file .env run -d --name algorithm-bench-nobears_stable-bnlearn algorithm-benchmark python main.py  algorithm=nobears_stable benchmark=bnlearn
+  when: manual
+
+deploy-notears_stable-bnlearn:
+  extends: .base
+  stage: deploy
+  needs:
+    - build-benchmark
+  script:
+    - docker compose -f benchmark.docker-compose.yml --env-file .env run -d --name algorithm-bench-notears_stable-bnlearn algorithm-benchmark python main.py  algorithm=notears_stable benchmark=bnlearn
+  when: manual
+
+deploy-benchmarks:
+  extends: .base
+  stage: deploy
+  needs:
+    - build-benchmark
+  script:
+    - docker compose -f benchmark.docker-compose.yml --env-file .env up -d #--build > logs/bench.log 2>&1
+#  artifacts:
+#    paths:
+#      - ./logs/
+#    expire_in: 1 day
+  when: manual
+
+remove-benchmarks-with-volumes:
+  extends: .base
+  stage: down
+  script:
+    - set -a && source .env
+    - docker compose -f benchmark.docker-compose.yml down -v
+    - docker rm -f algorithm-bench-pc_stable-bnlearn algorithm-bench-dag_gnn-bnlearn algorithm-bench-rai_stable-bnlearn algorithm-bench-nobears_stable-bnlearn algorithm-bench-notears_stable-bnlearn
+    - rm -r $PATH_TO_RESULTS
+  when: manual
+
+include:
+  - '.munin.gitlab-ci.yml'
+

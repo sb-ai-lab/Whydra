@@ -1,3 +1,10 @@
+# Python 3.10+
+#
+# Основной (устанавливаемый) набор — курированные пины из ветки sber_new_algorithms:
+# они подобраны так, чтобы всё поднималось в контуре Сбера.
+# Ниже, в комментариях, сохранены два справочных набора из ветки dev:
+# рабочий freeze для python 3.12.13 и клиентские версии для python 3.8.
+
 # Core Scientific Stack
 numpy==1.26.4
 pandas==2.3.3
@@ -5,19 +12,114 @@ scipy==1.15.3
 scikit-learn==1.7.2
 statsmodels==0.14.5
 networkx==3.4.2
+six>=1.17.0
 
 # Configuration & Progress
 hydra-core==1.3.2
 omegaconf==2.3.0
+PyYAML>=6.0
 tqdm==4.67.1
+
+# Data I/O
+pyarrow
 
 # Parallelization
 joblib==1.5.2
 
-# Visualization
+# Causal Discovery & Visualization
+# causal-learn устанавливается только для сравнительных проверок:
+#   pip install -r requirements-comparison.txt
 pydot==4.0.1
 graphviz==0.21
 matplotlib==3.10.7
+pyvis
 
-# Profiling (optional): WHYDRA_PROFILE=1 enables @profile in independence_tests.py
-line_profiler==5.0.0
+# Time Series and Statistical Utilities
+momentchi2==0.1.8
+tigramite==5.2.9.4
+
+# Optimization / Deep Learning
+tensorflow
+torch==2.9.1
+torchvision==0.24.1
+
+# Testing and Benchmark Monitoring
+pytest>=8.0.0
+psutil>=7.0.0
+
+# Профилирование — только для разработки, в рантайме не нужно.
+# Декоратор @profile в independence_tests.py включается переменной
+# окружения WHYDRA_PROFILE=1; без неё он no-op, и пакет не требуется.
+#   pip install line_profiler==5.0.0
+#   WHYDRA_PROFILE=1 kernprof -l -v main.py
+
+# System requirements not installed by pip:
+# - Graphviz executable for graph rendering
+# - A matching CUDA toolkit/driver when GPU-enabled PyTorch is required
+
+
+# ============================================================
+#  Справочно: pip freeze рабочего окружения ветки dev, python 3.12.13.
+#  Здесь свежее почти всё (numpy 2.x, pandas 3.x) и нет torch/pyarrow/hydra —
+#  на этом наборе прогонялась сверка с causal-learn.
+# ============================================================
+# absl-py==2.4.0
+# antlr4-python3-runtime==4.9.3
+# astunparse==1.6.3
+# graphviz==0.21
+# h5py==3.14.0
+# joblib==1.5.3
+# keras==3.14.0
+# matplotlib==3.10.8
+# momentchi2==0.1.8
+# networkx==3.6.1
+# numpy==2.4.4
+# pandas==3.0.2
+# patsy==1.0.2
+# protobuf==7.34.1
+# PyYAML==6.0.3
+# scikit-learn==1.8.0
+# scipy==1.17.1
+# six==1.17.0
+# statsmodels==0.14.6
+# tensorflow==2.21.0
+# tigramite==5.2.10.1
+# tqdm==4.67.3
+
+
+# ============================================================
+#  Справочно: клиентские версии для python 3.8 (контур заказчика).
+# ============================================================
+# # --- Core Scientific Stack (Client Versions) ---
+# numpy==1.24.4
+# pandas==1.5.3
+# scipy==1.10.1
+# scikit-learn==1.3.2
+# statsmodels==0.14.1
+# networkx==3.1
+# matplotlib==3.7.5
+# joblib==1.4.2
+# tqdm==4.67.1
+#
+# # --- Causal Discovery & Graph Utils (Client Versions) ---
+# graphviz==0.20.3
+# pydot==4.0.1
+# momentchi2==0.1.8
+#
+# # Только для работы с паркетными файлами (чтобы не использовать PySpark)
+# pyarrow
+#
+# # Могут заработать для python 3.8, но пока не проверены.
+# # --- Configuration & Logging (Missing in client logs, added for Py3.8) ---
+# hydra-core==1.3.2
+# omegaconf==2.3.0
+#
+# # --- Optimization / Deep Learning (Missing in client logs) ---
+# # Tensorflow 2.13 is the last version supporting Python 3.8
+# tensorflow<2.14
+# # PyTorch versions compatible with Python 3.8
+# torch>=1.13.0
+# torchvision>=0.14.0
+#
+# # --- Profiling (Missing in client logs) ---
+# line_profiler

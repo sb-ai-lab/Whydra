@@ -150,3 +150,12 @@ python main.py algorithm=rfci_stable benchmark=bnlearn
 
 `run_bootstrap_consensus.py` строит устойчивый граф по бутстрэп-выборкам одного кейса;
 он читает данные через `loader` из конфига бенчмарка (пути в `configs/benchmark/*.yaml`).
+
+## Перед pull request
+
+```shell
+python -m pip install -e ".[dev,comparison]"
+pre-commit install
+pre-commit run --all-files
+python -m pytest
+```

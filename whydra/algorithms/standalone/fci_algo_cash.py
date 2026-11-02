@@ -76,25 +76,46 @@ def checkTriple(a, b, c, nbrsA, nbrsC, sepsetA, sepsetC, suffStat, alpha, indepT
     return res, {'sepsetA': newsepsetA, 'sepsetC': newsepsetC}
 
 
-def pc_cons_intern(graphDict, suffstat, alpha, indepTest, version_unf=(None, None), maj_rule=True,
-                   verbose=False):
+def pc_cons_intern(
+    graphDict,
+    suffstat,
+    alpha,
+    indepTest,
+    version_unf=(None, None),
+    maj_rule=True,
+    verbose=False,
+):
+    """Проверяет неоднозначные тройки консервативным правилом.
+
+    Args:
+        graphDict: скелет, сепараторы и множество неоднозначных троек.
+        suffstat: достаточная статистика для CI-теста.
+        alpha: порог независимости.
+        indepTest: CI-тест, возвращающий p-value.
+        version_unf: параметр совместимости.
+        maj_rule: использовать правило большинства вместо консервативного.
+        verbose: параметр совместимости.
+
+    Returns:
+        graphDict с обновлёнными сепараторами и unfTriples.
+    """
     sk = graphDict['sk']
     p = sk.shape[0]
 
     if np.any(sk):
         # Сортировка индексов как в pcalg для воспроизводимости
-        ind = np.transpose(np.where(sk == PAG_CIRCLE))
+        ind = np.transpose(np.where(sk != 0))
         ind = ind[ind[:, 1].argsort()]
 
         tripleMatrix = []
         for a, b in ind:
             for c in range(p):
-                if a < c and sk[a, c] == 0 and sk[b, c] == PAG_CIRCLE:
+                if a < c and sk[a, c] == 0 and sk[b, c] != 0:
                     tripleMatrix.append((a, b, c))
 
         for a, b, c in tripleMatrix:
-            nbrsA = np.where(sk[:, a] == PAG_CIRCLE)[0]
-            nbrsC = np.where(sk[:, c] == PAG_CIRCLE)[0]
+            nbrsA = np.where(sk[:, a] != 0)[0]
+            nbrsC = np.where(sk[:, c] != 0)[0]
 
             res, r_abc = checkTriple(a, b, c, nbrsA, nbrsC, graphDict['sepset'][(a, c)],
                                      graphDict['sepset'][(c, a)],
@@ -169,8 +190,37 @@ def pc_cons_intern(graphDict, suffstat, alpha, indepTest, version_unf=(None, Non
 
 # --- Функции для поиска путей (из pcalg) ---
 
-def pdsep(skel, suffStat, indepTest, p, sepSet, alpha, pMax, m_max=float('inf'), pdsep_max=float('inf'), unfVect=None,
-          protected_edges=()):
+def pdsep(
+    skel,
+    suffStat,
+    indepTest,
+    p,
+    sepSet,
+    alpha,
+    pMax,
+    m_max=float('inf'),
+    pdsep_max=float('inf'),
+    unfVect=None,
+    protected_edges=(),
+):
+    """Ищет сепараторы в Possible-D-SEP независимо от кодировки скелета.
+
+    Args:
+        skel: словарь с матрицей скелета sk; ненулевой элемент означает ребро.
+        suffStat: достаточная статистика для CI-теста.
+        indepTest: CI-тест, возвращающий p-value.
+        p: число переменных.
+        sepSet: сепараторы по упорядоченным парам узлов.
+        alpha: порог независимости.
+        pMax: матрица максимальных p-value, обновляется на месте.
+        m_max: максимальный размер сепаратора.
+        pdsep_max: параметр совместимости.
+        unfVect: тройки, которые нельзя ориентировать как коллайдеры.
+        protected_edges: рёбра, запрещённые к удалению.
+
+    Returns:
+        Словарь с графом G, сепараторами, pMax, PDS и статистикой проверок.
+    """
     G = skel['sk'].astype(int)
     protected_edges = {
         frozenset((int(x), int(y))) for x, y in protected_edges
@@ -178,7 +228,8 @@ def pdsep(skel, suffStat, indepTest, p, sepSet, alpha, pMax, m_max=float('inf'),
     n_edgetest = [0 for i in range(1000)]
     ord = 0
     allPdsep_tmp = [set() for i in range(p)]
-    amat = np.copy(G)
+    # run_fci может вернуть скелет TAIL/TAIL: смежность не зависит от метки.
+    amat = np.where(G != 0, PAG_CIRCLE, 0)
     pdsep_pairs_scanned = 0
     pdsep_pairs_with_diffset = 0
     pdsep_ci_tests = 0
@@ -186,7 +237,7 @@ def pdsep(skel, suffStat, indepTest, p, sepSet, alpha, pMax, m_max=float('inf'),
     ind = []
     for i in range(len(G)):
         for j in range(len(G[i])):
-            if G[i][j] == PAG_CIRCLE:
+            if G[i][j] != 0:
                 ind.append((i, j))
     ind = sorted(ind, key=lambda x: (x[1], x[0]))
 

@@ -44,7 +44,7 @@ BK_ALGORITHMS = [
 ]
 
 #: Семейство RAI фоновые знания не поддерживает — зафиксировано отдельным тестом.
-NON_BK_ALGORITHMS = ["StandaloneRAIStable", "StandaloneRAIOptimized"]
+NON_BK_ALGORITHMS = ["StandaloneRAIStable"]
 
 N_JOBS_VALUES = [1, 4]
 

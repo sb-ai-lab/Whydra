@@ -40,7 +40,6 @@ from .standalone import fci_plus_algo_paralel_cash
 from .standalone import rai_algo
 from .standalone import rfci_algo
 from .standalone import gfci_algo
-from .standalone import standalone_raioptimized
 # NOTEARS/NOBEARS тянут TensorFlow. Импорт на уровне модуля грузил его в
 # каждый `import whydra` — ради двух алгоритмов из семнадцати. Грузим лениво,
 # в __init__ соответствующих обёрток, где проверка ошибки уже стояла.
@@ -153,6 +152,7 @@ class StandaloneFCIStable(_PagMatrixResult, CausalAlgorithm):
     FCI: скелет, Possible-D-SEP, затем правила ориентации R0–R10.
     Допускает скрытые переменные, результат — PAG. Реализация
     ``fci_algo_v2`` с исправленными правилами R1/R2/R5/R10.
+    Дополнительные kwargs (например, ``m_max``) передаются в ``fci_stable_v2``.
     """
     OUTPUT_ENCODING = MatrixEncoding.STANDARD
 
@@ -454,31 +454,6 @@ class StandaloneFCIPlusStableParallelCached(StandaloneFCIPlusStable):
         )
 
         return self._matrix_to_graph(pag_matrix, n_nodes)
-
-class StandaloneRAIOptimized(CausalAlgorithm):
-    """
-    RAI (recursive autonomy identification), оптимизированная реализация.
-    Фоновые знания не поддерживаются.
-    """
-    def __init__(self, alpha=0.05, indep_test='fisherz', **kwargs):
-        self.alpha = alpha
-        self.indep_test = indep_test
-        self.kwargs = kwargs
-
-    def run(self, data: np.ndarray, **kwargs) -> GeneralGraph:
-        node_names = default_node_names(data.shape[1])
-        params = dict(self.kwargs)
-        params.update(kwargs)
-        cg = standalone_raioptimized.rai_optimized(
-            data,
-            alpha=self.alpha,
-            indep_test=self.indep_test,
-            node_names=node_names,
-            **params
-        )
-        if hasattr(cg, 'G') and isinstance(cg.G, GeneralGraph):
-            return cg.G
-        return cg
 
 class StandaloneRAIStable(CausalAlgorithm):
     """
@@ -887,7 +862,6 @@ _STANDALONE_ALGORITHM_ALIASES: List[Tuple[Type[CausalAlgorithm], Tuple[str, ...]
     (StandaloneGFCIStable, ("gfci_stable",)),
     (StandaloneFCIPlusStable, ("fci_plus_stable",)),
     (StandaloneFCIPlusStableParallelCached, ("fci_plus_stable_parallel_cached", "fci_plus_stable_paralel_cash")),
-    (StandaloneRAIOptimized, ("rai_optimized",)),
     (StandaloneRAIStable, ("rai_stable",)),
     (StandaloneNoTearsStable, ("notears_stable",)),
     (StandaloneNoBearsStable, ("nobears_stable",)),
@@ -1043,7 +1017,7 @@ def run_standalone_algorithm(
         Имя алгоритма (каноническое имя класса или алиас). Допускаются
         различные формы записи, например: ``"StandalonePCStable"``,
         ``"pc_stable"``, ``"pcstable"``, ``"fci_stable"``,
-        ``"rai_optimized"``, ``"rai_stable"``.
+        ``"rai_stable"``.
     data_or_path : numpy.ndarray | str | pathlib.Path
         Данные для запуска алгоритма:
 
@@ -1140,7 +1114,6 @@ __all__ = [
     "StandaloneGFCIStable",
     "StandaloneFCIPlusStable",
     "StandaloneFCIPlusStableParallelCached",
-    "StandaloneRAIOptimized",
     "StandaloneRAIStable",
     "StandaloneNoTearsStable",
     "StandaloneNoBearsStable",

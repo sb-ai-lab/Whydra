@@ -10,7 +10,7 @@ standalone_dir = os.path.join(project_root, 'whydra', 'algorithms', 'standalone'
 if standalone_dir not in sys.path:
     sys.path.insert(0, standalone_dir)
 
-from whydra.algorithms.wrappers import StandaloneRAIStable, StandaloneRAIOptimized, create_standalone_algorithm
+from whydra.algorithms.wrappers import StandaloneRAIStable, create_standalone_algorithm
 
 from .conftest import (
     generate_linear_sem_data,
@@ -149,34 +149,8 @@ class TestRAIStableParallelExecution:
         algo_par = StandaloneRAIStable(alpha=0.05, indep_test='fisherz', n_jobs=2)
         graph_par = algo_par.run(data)
         
-        assert count_edges(graph_seq) == count_edges(graph_par), \
-            "Sequential and parallel should produce same number of edges"
-
-
-class TestRAIOptimized:
-    def test_rai_optimized_returns_general_graph(self):
-        np.random.seed(42)
-        data = np.random.randn(100, 3)
-        algo = StandaloneRAIOptimized(alpha=0.05, indep_test='fisherz')
-        graph = algo.run(data)
-        assert hasattr(graph, 'get_nodes')
-
-    def test_rai_optimized_node_count(self):
-        np.random.seed(42)
-        n_vars = 4
-        data = np.random.randn(200, n_vars)
-        algo = StandaloneRAIOptimized(alpha=0.05, indep_test='fisherz')
-        graph = algo.run(data)
-        assert len(graph.get_nodes()) == n_vars
-
-    def test_rai_optimized_chain_recovery(self):
-        W = get_chain_graph_3nodes()
-        data = generate_linear_sem_data(W, n_samples=1000, noise_std=1.0, seed=42)
-        algo = StandaloneRAIOptimized(alpha=0.05, indep_test='fisherz')
-        graph = algo.run(data)
-        
-        assert has_edge(graph, 0, 1), "Edge X1-X2 should exist"
-        assert has_edge(graph, 1, 2), "Edge X2-X3 should exist"
+        assert np.array_equal(graph_seq.graph, graph_par.graph), \
+            "Sequential and parallel must produce the same endpoint matrix"
 
 
 class TestRAIStableAlgorithmFactory:
@@ -188,15 +162,6 @@ class TestRAIStableAlgorithmFactory:
     def test_create_rai_stable_by_short_name(self):
         algo = create_standalone_algorithm("rai_stable", alpha=0.01)
         assert isinstance(algo, StandaloneRAIStable)
-
-    def test_create_rai_optimized_by_canonical_name(self):
-        algo = create_standalone_algorithm("standaloneraioptimized", alpha=0.01)
-        assert isinstance(algo, StandaloneRAIOptimized)
-        assert algo.alpha == 0.01
-
-    def test_create_rai_optimized_by_short_name(self):
-        algo = create_standalone_algorithm("rai_optimized", alpha=0.01)
-        assert isinstance(algo, StandaloneRAIOptimized)
 
 
 class TestRAIStableEdgeCases:
@@ -226,3 +191,48 @@ class TestRAIStableEdgeCases:
         assert has_edge(graph, 0, 1)
         assert has_edge(graph, 2, 3)
         assert has_edge(graph, 4, 5)
+
+
+class TestRAIStableSpeculativeReplay:
+    """Параллельный слой RAI: воркеры считают p-value наперёд, решения принимает replay."""
+
+    @staticmethod
+    def _dag_data():
+        rng = np.random.default_rng(2024)
+        n_vars = 14
+        W = np.zeros((n_vars, n_vars))
+        for i in range(n_vars):
+            for j in range(i + 1, n_vars):
+                if rng.random() < 0.3:
+                    W[i, j] = rng.uniform(0.5, 0.9) * rng.choice([-1, 1])
+        return generate_linear_sem_data(W, n_samples=2000, seed=7)
+
+    def test_replay_repeats_sequential_decisions(self):
+        """Последовательность решений (x, y, S, independent) при n_jobs=3 та же, что при n_jobs=1."""
+        from whydra.algorithms.standalone.rai_algo import RAIStableLearner
+
+        data = self._dag_data()
+        names = [f"X{i + 1}" for i in range(data.shape[1])]
+        seq = RAIStableLearner(data, 0.05, "fisherz", names)
+        seq.trace = []
+        graph_seq = seq.learn_structure(n_jobs=1)
+
+        par = RAIStableLearner(data, 0.05, "fisherz", names)
+        par.trace = []
+        graph_par = par.learn_structure(n_jobs=3)
+
+        assert par.trace == seq.trace
+        assert np.array_equal(graph_seq.graph, graph_par.graph)
+
+    def test_workers_take_most_of_the_ci_tests(self):
+        """При n_jobs=3 главный процесс считает лишь малую долю CI-тестов (иначе схема выродилась в sync)."""
+        from whydra.algorithms.standalone.rai_algo import RAIStableLearner
+
+        data = self._dag_data()
+        names = [f"X{i + 1}" for i in range(data.shape[1])]
+        par = RAIStableLearner(data, 0.05, "fisherz", names)
+        par.learn_structure(n_jobs=3)
+
+        assert par.stats["parallel_phases"] > 0
+        assert par.stats["ci_worker"] > 0
+        assert par.stats["ci_sync"] < 0.25 * par.stats["ci_total"], par.stats

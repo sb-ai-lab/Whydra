@@ -2,22 +2,28 @@ from __future__ import annotations
 """
 FCI Stable Algorithm v2.
 
-Changes from v1:
-  1. Bug fixes in orientation rules R1, R2, R5, R10 (see inline comments marked [BUGFIX]).
-  2. pdsep parallelized via joblib (the main bottleneck in v1).
-  3. New entry point: fci_stable_v2() accepts n_jobs and passes it through to pdsep.
-  4. pds_path optimization (biconnected-component restriction) for smaller Possible-D-SEP sets.
+Конвейер: скелет (``SkeletonDiscovery.run_fci``) -> Possible-D-SEP
+(``pdsep_v2``, семантика ``removeByPossibleDsep`` из causal-learn 0.1.4.5,
+параллельно через joblib) -> ориентация (``udag2pag_v2``: R0 + R1..R10).
+
+Отличия от v1 (``standalone_fci_stable.py``): другой скелет (sepset как
+объединение всех найденных сепараторов, как в FAS causal-learn), нет
+консервативного шага ``pc_cons_intern``, Possible-D-SEP считается по ребру
+(Tetrad ``getPossibleDsep``), а не по узлу (pcalg ``qreach``), рёбра на этом
+шаге удаляются немедленно, параллельная часть даёт результат, не зависящий
+от ``n_jobs``.
 
 Compatible with the same CausalGraph / CIT / SkeletonDiscovery interfaces.
 """
 
 import copy
+import time
+from collections import deque
 from itertools import combinations
 import numpy as np
 
 from joblib import Parallel, delayed
 
-# Импортируем универсальный класс тестов из соседнего файла
 from ..graph_core import CIT
 from ...background_knowledge import (
     BKOrientationGuard,
@@ -26,99 +32,17 @@ from ...background_knowledge import (
     apply_bk_checkpoint,
 )
 
-# --- Вспомогательные функции ---
 from .skeleton import SkeletonDiscovery
-from .pag_rules import PAG_ARROW, PAG_CIRCLE, PAG_TAIL, faith_check, minDiscPath, minUncovCircPath, minUncovPdPath, powerset, qreach
+from .pag_rules import (
+    PAG_ARROW,
+    PAG_CIRCLE,
+    PAG_TAIL,
+    faith_check,
+    minDiscPath,
+    minUncovCircPath,
+    minUncovPdPath,
+)
 
-
-# =============================================================================
-#  Утилиты (без изменений)
-# =============================================================================
-
-def checkTriple(a, b, c, nbrsA, nbrsC, sepsetA, sepsetC, suffStat, alpha, indepTest, maj_rule=True):
-    nr_indep = 0
-    temp = []
-
-    if len(nbrsA) > 0:
-        for s in powerset(nbrsA):
-            pval = indepTest(suffStat, a, c, list(s))
-            if pval >= alpha:
-                nr_indep += 1
-                temp.append(b in s)
-
-    if len(nbrsC) > 0:
-        for s in powerset(nbrsC):
-            pval = indepTest(suffStat, a, c, list(s))
-            if pval >= alpha:
-                nr_indep += 1
-                temp.append(b in s)
-
-    newsepsetA = set(sepsetA) if sepsetA is not None else set()
-    newsepsetC = set(sepsetC) if sepsetC is not None else set()
-
-    if len(temp) == 0:
-        temp.append(False)
-
-    res = 3
-    if maj_rule:
-        if sum(temp) / len(temp) < .5:
-            res = 1
-            if b in newsepsetA: newsepsetA.remove(b)
-            if b in newsepsetC: newsepsetC.remove(b)
-        elif sum(temp) / len(temp) > .5:
-            res = 2
-            newsepsetA.add(b)
-            newsepsetC.add(b)
-    else:
-        if sum(temp) / len(temp) == 0:
-            res = 1
-            if b in newsepsetA: newsepsetA.remove(b)
-            if b in newsepsetC: newsepsetC.remove(b)
-        elif sum(temp) / len(temp) == 1:
-            res = 2
-            newsepsetA.add(b)
-            newsepsetC.add(b)
-
-    return res, {'sepsetA': newsepsetA, 'sepsetC': newsepsetC}
-
-
-def pc_cons_intern(graphDict, suffstat, alpha, indepTest, version_unf=(None, None), maj_rule=True,
-                   verbose=False):
-    sk = graphDict['sk']
-    p = sk.shape[0]
-
-    if np.any(sk):
-        ind = np.transpose(np.where(sk == PAG_CIRCLE))
-        ind = ind[ind[:, 1].argsort()]
-
-        tripleMatrix = []
-        for a, b in ind:
-            for c in range(p):
-                if a < c and sk[a, c] == 0 and sk[b, c] == PAG_CIRCLE:
-                    tripleMatrix.append((a, b, c))
-
-        for a, b, c in tripleMatrix:
-            nbrsA = np.where(sk[:, a] == PAG_CIRCLE)[0]
-            nbrsC = np.where(sk[:, c] == PAG_CIRCLE)[0]
-
-            res, r_abc = checkTriple(a, b, c, nbrsA, nbrsC, graphDict['sepset'][(a, c)],
-                                     graphDict['sepset'][(c, a)],
-                                     suffstat, alpha, indepTest, maj_rule=maj_rule)
-            if res == 3:
-                if 'unfTriples' in graphDict.keys():
-                    graphDict['unfTriples'].add((a, b, c))
-                else:
-                    graphDict['unfTriples'] = {(a, b, c)}
-
-            graphDict['sepset'][(a, c)] = r_abc['sepsetA']
-            graphDict['sepset'][(c, a)] = r_abc['sepsetC']
-
-    return graphDict
-
-
-# =============================================================================
-#  Функции поиска путей (без изменений)
-# =============================================================================
 
 # =============================================================================
 #  Biconnected components (для pds_path оптимизации)
@@ -205,113 +129,506 @@ def _nodes_in_component(component):
     return nodes
 
 
-# qreach_path (per-edge вариант Colombo Def. 3.4) удалён: он не вызывался,
-# а pdsep_v2 берёт объединение per-edge ограничений по всем соседям x.
-# Оптимизация из-за этого слабее документированной — см. комментарий там.
-
-
 # =============================================================================
-#  pdsep v2 — параллельная версия
+#  Possible-D-SEP по семантике causal-learn (Tetrad)
 # =============================================================================
 
-def _pdsep_worker(x, adj_x, allPdsep_x, indepTest, suffStat,
-                  alpha, pMax_row, m_max, protected_edges=frozenset()):
+def _cl_node_name_key(i):
+    """Ключ сортировки, воспроизводящий порядок узлов causal-learn.
+
+    causal-learn сортирует Possible-D-SEP по ИМЕНАМ узлов (по умолчанию
+    'X1', 'X2', ...), лексикографически в обратном порядке. Ключ намеренно
+    строится по позиции, а не по реальным именам колонок пользователя: так
+    результат whydra не зависит от того, как названы переменные.
+
+    Args:
+        i: индекс узла.
+
+    Returns:
+        Строка вида 'X{i+1}'.
     """
-    Worker для параллельного pdsep.
-    Обрабатывает один узел x: для каждого его соседа y проверяет CI-тесты
-    по подмножествам Possible-D-SEP.
+    return f"X{i + 1}"
 
-    ``protected_edges`` — множество ``frozenset({x, y})``, которые требует
-    background knowledge. Такие пары пропускаются целиком: ребро всё равно
-    не будет удалено, поэтому CI-тесты по ним — чистая трата времени, а
-    записанный sepset для остающейся смежной пары только мешал бы ориентации.
 
-    Возвращает:
-      - edge_removals: [(x, y), ...]
-      - sepset_updates: [(x, y, S), ...]
-      - pmax_updates: [(x, y, pval), ...]
-      - tests_count: int
+def _adjacency_lists(amat):
+    """Списки смежности для всех узлов, по возрастанию индексов.
+
+    Args:
+        amat: матрица PAG в раскладке whydra (amat[u][v] — метка у узла v
+            на ребре u—v); ненулевое значение означает наличие ребра.
+
+    Returns:
+        Список из p списков: adj[i] — индексы узлов, смежных с i.
     """
-    edge_removals = []
-    sepset_updates = []
-    pmax_updates = []
-    tests_count = 0
+    p = len(amat)
+    return [[j for j in range(p) if amat[i][j] != 0] for i in range(p)]
 
-    tf1 = [i for i in allPdsep_x if i != x]
 
-    for y in adj_x:
-        if frozenset((int(x), int(y))) in protected_edges:
+def _is_def_collider(amat, a, b, c):
+    """Проверяет, является ли тройка a — b — c определённым коллайдером.
+
+    Соответствует ``graph.is_def_collider(a, b, c)`` из causal-learn:
+    у узла b стоят стрелки со стороны обоих соседей, т.е. a *-> b <-* c.
+
+    Args:
+        amat: матрица PAG в раскладке whydra.
+        a: первый узел тройки.
+        b: центральный узел тройки.
+        c: третий узел тройки.
+
+    Returns:
+        True, если amat[a][b] == PAG_ARROW и amat[c][b] == PAG_ARROW.
+    """
+    return amat[a][b] == PAG_ARROW and amat[c][b] == PAG_ARROW
+
+
+def _semi_directed_reachable(amat, adj, src):
+    """Множество узлов, достижимых из src полунаправленным путём.
+
+    Порт ``existsSemiDirectedPath`` из causal-learn 0.1.4.5, но за один
+    обход возвращает все цели сразу. Шаг из узла n к смежному m разрешён
+    тогда и только тогда, когда метка У УЗЛА n (в раскладке whydra это
+    amat[m][n]) есть PAG_TAIL или PAG_CIRCLE. Как и в оригинале, сам src
+    не считается достижимым, пока до него не дойдёт путь через цикл.
+
+    Args:
+        amat: матрица PAG в раскладке whydra.
+        adj: списки смежности (см. _adjacency_lists).
+        src: индекс стартового узла.
+
+    Returns:
+        Множество индексов достижимых узлов.
+    """
+    visited = set()
+    queue = deque()
+    for u in adj[src]:
+        if amat[u][src] in (PAG_TAIL, PAG_CIRCLE) and u not in visited:
+            visited.add(u)
+            queue.append(u)
+    while queue:
+        t = queue.popleft()
+        for u in adj[t]:
+            if amat[u][t] in (PAG_TAIL, PAG_CIRCLE) and u not in visited:
+                visited.add(u)
+                queue.append(u)
+    return visited
+
+
+def _exists_semi_directed_path(amat, src, dst, adj=None):
+    """Проверяет существование полунаправленного пути src ~> dst.
+
+    Args:
+        amat: матрица PAG в раскладке whydra.
+        src: индекс стартового узла.
+        dst: индекс целевого узла.
+        adj: списки смежности; если None — строятся по amat.
+
+    Returns:
+        True, если dst достижим из src полунаправленным путём
+        (путь нулевой длины путём не считается).
+    """
+    if adj is None:
+        adj = _adjacency_lists(amat)
+    return dst in _semi_directed_reachable(amat, adj, src)
+
+
+def _possible_dsep(amat, x, y, adj=None):
+    """Вычисляет Possible-D-SEP(x, y) по определению Tetrad / causal-learn.
+
+    Порт ``getPossibleDsep`` из causal-learn 0.1.4.5 на раскладку whydra.
+    BFS ведётся по упорядоченным парам (a, b), засеянным парами (x, b) для
+    b из adj(x) \\ {y}; все такие b попадают в результат безусловно. При
+    извлечении пары (a, b) для каждого c из adj(b) \\ {a, x, y} сначала
+    записывается previous[c].add(b) и лишь затем проверяется условие
+    расширения (коллайдер a *-> b <-* c либо смежность a и c).
+
+    Незасеянный узел b попадает в PDS, если в момент извлечения пары (a, b)
+    из очереди в previous[b] есть r (не x и не b) с полунаправленным путём
+    r ~> x или r ~> b — ровно как в оригинале, где предикат тоже считается
+    по частичной карте previous на момент извлечения. Порядок обхода в
+    оригинале задаётся Python-множествами (зависит от PYTHONHASHSEED),
+    здесь — возрастанием индексов; на случайных графах результат
+    референса от порядка не зависел (см. tests/test_fci_v2_pdsep.py).
+
+    Порядок результата — сортировка по ключу _cl_node_name_key в обратном
+    порядке: это в точности ``_dsep.sort(reverse=True)`` оригинала, где
+    GraphNode сравнивается по имени 'X{i+1}'.
+
+    Args:
+        amat: матрица PAG в раскладке whydra.
+        x: индекс первого узла ребра.
+        y: индекс второго узла ребра.
+        adj: списки смежности; если None — строятся по amat.
+
+    Returns:
+        Список индексов узлов Possible-D-SEP(x, y).
+    """
+    if adj is None:
+        adj = _adjacency_lists(amat)
+    result = set()
+    visited = set()
+    queue = deque()
+    previous = {}
+    reach_cache = {}
+    for b in adj[x]:
+        if b == y:
             continue
-        tf = [i for i in tf1 if i != y]
-        diff_set = [i for i in tf if i not in adj_x]
-
-        if len(diff_set) > 0:
-            done = False
-            ord_val = 0
-            current_pmax = pMax_row[y]
-
-            while not done and ord_val < min(len(tf), m_max):
-                ord_val += 1
-                if ord_val == 1:
-                    for S in diff_set:
-                        pval = indepTest(suffStat, x, y, [S])
-                        tests_count += 1
-                        if pval > current_pmax:
-                            current_pmax = pval
-                            pmax_updates.append((x, y, pval))
-                        if pval >= alpha:
-                            edge_removals.append((x, y))
-                            sepset_updates.append((x, y, {S}))
-                            done = True
-                            break
-                else:
-                    for S in combinations(tf, ord_val):
-                        if not set(S).issubset(set(adj_x)):
-                            pval = indepTest(suffStat, x, y, list(S))
-                            tests_count += 1
-                            if pval > current_pmax:
-                                current_pmax = pval
-                                pmax_updates.append((x, y, pval))
-                            if pval >= alpha:
-                                edge_removals.append((x, y))
-                                sepset_updates.append((x, y, set(S)))
-                                done = True
-                                break
-
-    return edge_removals, sepset_updates, pmax_updates, tests_count
+        pair = (x, b)
+        queue.append(pair)
+        visited.add(pair)
+        result.add(b)
+    while queue:
+        a, b = queue.popleft()
+        if b not in result:
+            for r in sorted(previous.get(b, ())):
+                if r == x or r == b:
+                    continue
+                reach = reach_cache.get(r)
+                if reach is None:
+                    reach = _semi_directed_reachable(amat, adj, r)
+                    reach_cache[r] = reach
+                if x in reach or b in reach:
+                    result.add(b)
+                    break
+        for c in adj[b]:
+            if c == a or c == x or c == y:
+                continue
+            previous.setdefault(c, set()).add(b)
+            if _is_def_collider(amat, a, b, c) or amat[a][c] != 0:
+                pair = (a, c)
+                if pair not in visited:
+                    visited.add(pair)
+                    queue.append(pair)
+    result.discard(x)
+    result.discard(y)
+    return sorted(result, key=_cl_node_name_key, reverse=True)
 
 
-def pdsep_v2(skel, suffStat, indepTest, p, sepSet, alpha, pMax,
-             m_max=float('inf'), pdsep_max=float('inf'), unfVect=None,
-             n_jobs=1, verbose=False, use_pds_path=True, protected_edges=()):
+def _side_order(amat, i, j):
+    """Порядок концов ребра (i, j), i < j, как у Edge в causal-learn.
+
+    Конструктор Edge в causal-learn меняет местами node1 и node2, если метка
+    у node1 (узла с меньшим индексом) — ARROW, а метка у node2 — TAIL или
+    CIRCLE. В раскладке whydra метка у узла i равна amat[j][i].
+
+    Args:
+        amat: матрица PAG в раскладке whydra.
+        i: меньший индекс ребра.
+        j: больший индекс ребра.
+
+    Returns:
+        Кортеж (a, b): порядок концов ребра после возможного переворота.
     """
-    Parallelized Possible-D-SEP step for FCI.
+    if amat[j][i] == PAG_ARROW and amat[i][j] in (PAG_CIRCLE, PAG_TAIL):
+        return (j, i)
+    return (i, j)
 
-    Key differences from v1:
-      1. The Possible-D-SEP sets and the amat snapshot are computed BEFORE
-         the main loop (stable approach — no mutations during iteration).
-      2. The per-node work is dispatched to parallel workers via joblib.
-      3. Results are aggregated after all workers finish: edge removals,
-         sepset updates, pMax updates are applied in bulk.
-      4. Optional pds_path optimization (biconnected component restriction).
+
+def _restrict_to_component(
+    pds,
+    a,
+    b,
+    components,
+    edge_to_comp,
+):
+    """Ограничивает Possible-D-SEP двусвязной компонентой ребра (a, b).
+
+    Используется только при use_pds_path=True (Colombo et al. 2012,
+    Def. 3.4): узлы вне двусвязной компоненты ребра (a, b) не лежат ни на
+    одном пути между a и b и отбрасываются.
+
+    Args:
+        pds: список индексов Possible-D-SEP (порядок сохраняется).
+        a: первый узел ребра.
+        b: второй узел ребра.
+        components: список двусвязных компонент
+            (см. _find_biconnected_components).
+        edge_to_comp: карта ребро -> индекс компоненты
+            (см. _build_edge_to_component_map).
+
+    Returns:
+        Список индексов из pds, лежащих в компоненте ребра (a, b); если
+        ребро не входит ни в одну компоненту — pds без изменений.
+    """
+    comp_idx = edge_to_comp.get((min(a, b), max(a, b)))
+    if comp_idx is None:
+        return list(pds)
+    allowed = _nodes_in_component(components[comp_idx])
+    return [node for node in pds if node in allowed]
+
+
+def _edge_context(
+    amat,
+    a,
+    b,
+    adj,
+    components=None,
+    edge_to_comp=None,
+):
+    """Строит контекст проверки ребра a — b для _test_edge.
+
+    Контекст — это всё, от чего зависит результат CI-перебора по ребру:
+    PDS с обеих сторон и списки смежности обоих концов. Совпадение двух
+    контекстов гарантирует одинаковый результат _test_edge.
+
+    Args:
+        amat: матрица PAG в раскладке whydra.
+        a: первый узел ребра (в порядке _side_order).
+        b: второй узел ребра.
+        adj: списки смежности для amat.
+        components: список двусвязных компонент или None
+            (use_pds_path=False).
+        edge_to_comp: карта ребро -> компонента или None.
+
+    Returns:
+        Словарь с ключами 'a', 'b', 'pds_a', 'pds_b', 'adj_a', 'adj_b'.
+    """
+    pds_a = _possible_dsep(amat, a, b, adj)
+    pds_b = _possible_dsep(amat, b, a, adj)
+    if components is not None:
+        pds_a = _restrict_to_component(pds_a, a, b, components, edge_to_comp)
+        pds_b = _restrict_to_component(pds_b, a, b, components, edge_to_comp)
+    return {
+        'a': a,
+        'b': b,
+        'pds_a': pds_a,
+        'pds_b': pds_b,
+        'adj_a': list(adj[a]),
+        'adj_b': list(adj[b]),
+    }
+
+
+def _search_separator(
+    x,
+    y,
+    pds,
+    adj_x,
+    adj_y,
+    indepTest,
+    suffStat,
+    alpha,
+    m_max,
+    pmax_start,
+):
+    """Перебирает подмножества Possible-D-SEP в поисках сепаратора x ⊥ y.
+
+    Перебор по возрастанию размера от 2 до min(len(pds), m_max)
+    включительно, внутри размера — лексикографически по списку pds
+    (itertools.combinations). Подмножества S с S ⊆ adj_x или S ⊆ adj_y
+    пропускаются, как в causal-learn: они уже проверены на этапе скелета.
+    Порог независимости — pval >= alpha (конвенция whydra; в causal-learn
+    строго >, расхождение возможно только при pval == alpha).
+
+    Args:
+        x: индекс первого узла.
+        y: индекс второго узла.
+        pds: упорядоченный список индексов Possible-D-SEP(x, y).
+        adj_x: список смежных узлов x.
+        adj_y: список смежных узлов y.
+        indepTest: функция indepTest(suffStat, x, y, S_list) -> p-value.
+        suffStat: достаточная статистика для indepTest.
+        alpha: уровень значимости.
+        m_max: максимальный размер сепаратора.
+        pmax_start: стартовое значение максимума p-value для пары.
+
+    Returns:
+        Кортеж (sepset, tests, pmax, max_size): sepset — найденный
+        сепаратор (set) или None; tests — число CI-тестов; pmax — максимум
+        p-value; max_size — наибольший испытанный размер (0, если тестов
+        не было).
+    """
+    tests = 0
+    pmax = pmax_start
+    max_size = 0
+    set_adj_x = set(adj_x)
+    set_adj_y = set(adj_y)
+    upper = len(pds) if m_max == float('inf') else min(len(pds), int(m_max))
+    for size in range(2, upper + 1):
+        for S in combinations(pds, size):
+            set_S = set(S)
+            if set_S <= set_adj_x or set_S <= set_adj_y:
+                continue
+            pval = indepTest(suffStat, x, y, list(S))
+            tests += 1
+            if pval > pmax:
+                pmax = pval
+            if size > max_size:
+                max_size = size
+            if pval >= alpha:
+                return set_S, tests, pmax, max_size
+    return None, tests, pmax, max_size
+
+
+def _test_edge(
+    ctx,
+    indepTest,
+    suffStat,
+    alpha,
+    m_max,
+    pmax_start,
+):
+    """Проверяет ребро a — b на удаление по Possible-D-SEP с двух сторон.
+
+    Сначала ищется сепаратор со стороны a (x=a, y=b), затем — только если
+    ничего не найдено — со стороны b, как в ``removeByPossibleDsep``.
+
+    Args:
+        ctx: контекст ребра (результат _edge_context).
+        indepTest: функция независимости.
+        suffStat: достаточная статистика.
+        alpha: уровень значимости.
+        m_max: максимальный размер сепаратора.
+        pmax_start: стартовый максимум p-value для пары.
+
+    Returns:
+        Словарь с ключами 'removed' (bool), 'sepset' (set | None),
+        'tests' (int), 'pmax' (float), 'max_ord' (int).
+    """
+    a = ctx['a']
+    b = ctx['b']
+    sepset, tests, pmax, max_ord = _search_separator(
+        a, b, ctx['pds_a'], ctx['adj_a'], ctx['adj_b'],
+        indepTest, suffStat, alpha, m_max, pmax_start,
+    )
+    if sepset is None:
+        sepset, tests_b, pmax_b, max_ord_b = _search_separator(
+            b, a, ctx['pds_b'], ctx['adj_b'], ctx['adj_a'],
+            indepTest, suffStat, alpha, m_max, pmax_start,
+        )
+        tests += tests_b
+        pmax = max(pmax, pmax_b)
+        max_ord = max(max_ord, max_ord_b)
+    return {
+        'removed': sepset is not None,
+        'sepset': sepset,
+        'tests': tests,
+        'pmax': pmax,
+        'max_ord': max_ord,
+    }
+
+
+def _pdsep_edge_worker(
+    amat_snapshot,
+    i,
+    j,
+    indepTest,
+    suffStat,
+    alpha,
+    m_max,
+    pmax_start,
+    components,
+    edge_to_comp,
+):
+    """Единица работы joblib: спекулятивная проверка одного ребра по снимку.
+
+    Args:
+        amat_snapshot: копия матрицы PAG на момент старта фазы удалений.
+        i: меньший индекс ребра.
+        j: больший индекс ребра.
+        indepTest: функция независимости.
+        suffStat: достаточная статистика.
+        alpha: уровень значимости.
+        m_max: максимальный размер сепаратора.
+        pmax_start: стартовый максимум p-value для пары (i, j).
+        components: двусвязные компоненты или None.
+        edge_to_comp: карта ребро -> компонента или None.
+
+    Returns:
+        Кортеж (ctx, result): контекст ребра и результат _test_edge.
+    """
+    adj = _adjacency_lists(amat_snapshot)
+    a, b = _side_order(amat_snapshot, i, j)
+    ctx = _edge_context(amat_snapshot, a, b, adj, components, edge_to_comp)
+    result = _test_edge(ctx, indepTest, suffStat, alpha, m_max, pmax_start)
+    return ctx, result
+
+
+def pdsep_v2(
+    skel,
+    suffStat,
+    indepTest,
+    p,
+    sepSet,
+    alpha,
+    pMax,
+    m_max=float('inf'),
+    pdsep_max=float('inf'),
+    unfVect=None,
+    n_jobs=1,
+    verbose=False,
+    use_pds_path=False,
+    protected_edges=(),
+):
+    """Шаг Possible-D-SEP алгоритма FCI с семантикой causal-learn 0.1.4.5.
+
+    Воспроизводит ``removeByPossibleDsep`` (Tetrad-style) из causal-learn:
+    скелет приводится к o-o, v-структуры ориентируются по sepset (аналог
+    rule0), затем для каждого ребра — в порядке (i, j), i < j, с порядком
+    концов как у Edge в causal-learn (см. _side_order) — вычисляется
+    Possible-D-SEP по ребру (Tetrad ``getPossibleDsep``), перебираются его
+    подмножества размера не меньше 2 (подмножества adj(a) и adj(b)
+    пропускаются), и при обнаружении независимости ребро удаляется
+    НЕМЕДЛЕННО — следующие рёбра видят уже уменьшенный граф. Сначала
+    проверяется сторона a, затем (если ничего не найдено) сторона b.
+
+    Намеренно НЕ воспроизводятся два дефекта референса:
+    1. causal-learn записывает сепаратор только в ключ sep_sets[(a, b)];
+       здесь пишутся оба ключа (a, b) и (b, a).
+    2. DepthChoiceGenerator в causal-learn из-за алиасинга списка
+       пропускает первое сочетание каждого размера; здесь перебираются
+       все сочетания через itertools.combinations.
+
+    Параллельность: спекулятивная фаза + последовательная проверка. При
+    n_jobs != 1 все рёбра проверяются параллельно (joblib) на неизменяемом
+    снимке графа. Затем идёт последовательный проход в порядке рёбер: для
+    каждого ребра контекст (PDS обеих сторон и списки смежности концов)
+    пересчитывается на живом графе; если он совпал со спекулятивным,
+    берётся готовый результат, иначе ребро проверяется заново. Метки в
+    течение шага не меняются (только удаления), а равенство контекстов
+    гарантирует равенство входа _test_edge, поэтому результат (граф,
+    sepset, pMax) не зависит от n_jobs и совпадает с последовательным
+    выполнением.
+
+    use_pds_path — задокументированное отклонение от causal-learn (по
+    умолчанию выключено): Possible-D-SEP ограничивается двусвязной
+    компонентой проверяемого ребра (Colombo et al. 2012, Def. 3.4);
+    компоненты считаются один раз на снимке до фазы удалений.
+
+    pdsep_max сохранён для совместимости сигнатуры и не используется.
+
+    Args:
+        skel: результат SkeletonDiscovery; skel['sk'] — матрица скелета,
+            любое ненулевое значение означает ребро.
+        suffStat: достаточная статистика для indepTest.
+        indepTest: функция indepTest(suffStat, x, y, S) -> p-value.
+        p: число переменных.
+        sepSet: словарь по всем упорядоченным парам (i, j) -> set.
+        alpha: уровень значимости.
+        pMax: массив p×p float — максимум p-value по парам (обновляется
+            симметрично).
+        m_max: максимальный размер сепаратора.
+        pdsep_max: не используется (совместимость сигнатуры).
+        unfVect: множество троек, которые нельзя ориентировать как
+            коллайдеры (в v2 всегда пусто).
+        n_jobs: число воркеров joblib; на результат не влияет.
+        verbose: печать сводки по шагу.
+        use_pds_path: ограничивать PDS двусвязной компонентой ребра.
+        protected_edges: пары (x, y), которые нельзя удалять (BK).
+
+    Returns:
+        Словарь с ключами 'G' (0/1-матрица смежности), 'sepset', 'pMax',
+        'allPdsep' (пустой список, совместимость), 'max_ord' (наибольший
+        испытанный размер сепаратора).
     """
     if unfVect is None:
         unfVect = set()
-    protected_edges = {
-        frozenset((int(x), int(y))) for x, y in protected_edges
-    }
+    protected = {frozenset((int(x), int(y))) for x, y in protected_edges}
 
-    G = skel['sk'].astype(int)
-    amat = np.copy(G)
+    amat = np.where(np.asarray(skel['sk']) != 0, PAG_CIRCLE, 0).astype(int)
 
-    # --- Ориентация v-структур на amat (как в v1) ---
-    ind = []
-    for i in range(len(G)):
-        for j in range(len(G[i])):
-            if G[i][j] == PAG_CIRCLE:
-                ind.append((i, j))
-    ind = sorted(ind, key=lambda x: (x[1], x[0]))
-
+    # --- Ориентация v-структур (эквивалент rule0 causal-learn) ---
+    ind = [(i, j) for i in range(p) for j in range(p) if amat[i][j] != 0]
+    ind = sorted(ind, key=lambda e: (e[1], e[0]))
     for x, y in ind:
         allZ = [i for i in range(len(amat[y])) if amat[y][i] != 0 and i != x]
         for z in allZ:
@@ -322,82 +639,173 @@ def pdsep_v2(skel, suffStat, indepTest, p, sepSet, alpha, pMax,
                     if (x, y, z) not in unfVect and (z, y, x) not in unfVect:
                         amat[x][y] = amat[z][y] = PAG_ARROW
 
-    # --- Вычисляем Possible-D-SEP для всех узлов (ДО параллельного цикла) ---
+    # --- Снимок рёбер в порядке causal-learn; защищённые не трогаем ---
+    edges = [
+        (i, j)
+        for i in range(p)
+        for j in range(i + 1, p)
+        if amat[i][j] != 0 and frozenset((i, j)) not in protected
+    ]
+
+    components = None
+    edge_to_comp = None
     if use_pds_path:
         components = _find_biconnected_components(amat)
         edge_to_comp = _build_edge_to_component_map(components)
-        # Для pds_path: храним per-edge PDS, вычислим ниже
-        allPdsep_full = [qreach(x, amat) for x in range(p)]
-    else:
-        allPdsep_full = [qreach(x, amat) for x in range(p)]
 
-    # --- Снимок amat для стабильного подхода ---
-    amat_snapshot = np.copy(amat)
-
-    # --- Подготовка данных для каждого worker'а ---
-    worker_args = []
-    for x in range(p):
-        an0 = [amat_snapshot[x][i] != 0 for i in range(p)]
-        adj_x = [i for i in range(p) if an0[i]]
-
-        if use_pds_path:
-            # Для каждого узла собираем объединение pds_path по всем его соседям
-            pds_union = set()
-            for y in adj_x:
-                edge_key = (min(x, y), max(x, y))
-                comp_idx = edge_to_comp.get(edge_key, None)
-                if comp_idx is not None:
-                    comp_nodes = _nodes_in_component(components[comp_idx])
-                    pds_union.update(n for n in allPdsep_full[x] if n in comp_nodes)
-                else:
-                    pds_union.update(allPdsep_full[x])
-            allPdsep_x = sorted(list(pds_union))
-        else:
-            allPdsep_x = allPdsep_full[x]
-
-        worker_args.append((x, adj_x, allPdsep_x, indepTest,
-                            suffStat, alpha, pMax[x].copy(), m_max,
-                            protected_edges))
-
-    # --- Параллельное выполнение ---
-    if n_jobs == 1:
-        results_list = [_pdsep_worker(*args) for args in worker_args]
-    else:
-        if verbose:
-            print(f"  [pdsep_v2] Launching parallel with n_jobs={n_jobs}")
-        results_list = Parallel(n_jobs=n_jobs)(
-            delayed(_pdsep_worker)(*args) for args in worker_args
+    # --- Спекулятивная фаза (параллельная, только при n_jobs != 1) ---
+    t_spec = time.perf_counter()
+    speculative = {}
+    if n_jobs != 1 and edges:
+        amat_snapshot = np.copy(amat)
+        parallel_results = Parallel(n_jobs=n_jobs)(
+            delayed(_pdsep_edge_worker)(
+                amat_snapshot, i, j, indepTest, suffStat, alpha, m_max,
+                max(pMax[i, j], pMax[j, i]), components, edge_to_comp,
+            )
+            for (i, j) in edges
         )
+        speculative = dict(zip(edges, parallel_results))
 
-    # --- Агрегация результатов ---
+    # --- Последовательная проверка и применение ---
+    t_valid = time.perf_counter()
     total_tests = 0
     max_ord = 0
+    n_removed = 0
+    n_speculative_hits = 0
+    n_recomputed = 0
+    adj = _adjacency_lists(amat)
 
-    for edge_removals, sepset_updates, pmax_updates, tests_count in results_list:
-        total_tests += tests_count
+    for (i, j) in edges:
+        a, b = _side_order(amat, i, j)
+        ctx_live = _edge_context(amat, a, b, adj, components, edge_to_comp)
+        if (i, j) in speculative and speculative[(i, j)][0] == ctx_live:
+            result = speculative[(i, j)][1]
+            n_speculative_hits += 1
+        else:
+            result = _test_edge(
+                ctx_live, indepTest, suffStat, alpha, m_max,
+                max(pMax[i, j], pMax[j, i]),
+            )
+            n_recomputed += 1
 
-        for (x, y, pval) in pmax_updates:
-            if pMax[x, y] < pval:
-                pMax[x, y] = pval
-
-        for (x, y) in edge_removals:
-            if frozenset((int(x), int(y))) in protected_edges:
-                continue
-            amat[x][y] = amat[y][x] = 0
-
-        for (x, y, S) in sepset_updates:
-            sepSet[(x, y)] = S
-            sepSet[(y, x)] = S
+        if result['removed']:
+            amat[a][b] = 0
+            amat[b][a] = 0
+            adj[a] = [k for k in adj[a] if k != b]
+            adj[b] = [k for k in adj[b] if k != a]
+            sepSet[(a, b)] = set(result['sepset'])
+            sepSet[(b, a)] = set(result['sepset'])
+            n_removed += 1
+        pMax[a, b] = max(pMax[a, b], pMax[b, a], result['pmax'])
+        pMax[b, a] = pMax[a, b]
+        total_tests += result['tests']
+        if result['max_ord'] > max_ord:
+            max_ord = result['max_ord']
 
     if verbose:
-        print(f"  [pdsep_v2] Total CI tests: {total_tests}")
+        t_end = time.perf_counter()
+        print(
+            f"[FCI v2] pdsep: edges={len(edges)} removed={n_removed} "
+            f"ci_tests={total_tests} speculative_hits={n_speculative_hits} "
+            f"recomputed={n_recomputed} n_jobs={n_jobs} "
+            f"t_speculative={t_valid - t_spec:.1f}s t_validate={t_end - t_valid:.1f}s"
+        )
 
-    # Обновляем G на основе amat
-    for i in range(p):
-        for j in range(p):
-            G[i][j] = True if amat[i][j] != 0 else False
-
+    G = (amat != 0).astype(int)
     return {'G': G, "sepset": sepSet, "pMax": pMax, "allPdsep": [], "max_ord": max_ord}
+
+# =============================================================================
+#  R1 + R2 в порядке causal-learn (rulesR1R2cycle)
+# =============================================================================
+
+def _arrow_allowed(pag, x, y):
+    """Можно ли поставить стрелку у y на ребре x—y (is_arrow_point_allowed без BK).
+
+    causal-learn не переписывает уже поставленный хвост стрелкой; whydra
+    раньше в R1 это делал.
+
+    Args:
+        pag: матрица PAG в раскладке whydra (pag[u][v] — метка у v).
+        x: узел, со стороны которого ставится стрелка.
+        y: узел, у которого ставится стрелка.
+
+    Returns:
+        True, если метка у y на ребре x—y не TAIL.
+    """
+    return pag[x][y] != PAG_TAIL
+
+
+def _rule_r1(pag, bk, a, b, c, unfVect):
+    """R1: a *-> b o-* c, a и c не смежны => b -> c.
+
+    Args:
+        pag: матрица PAG в раскладке whydra.
+        bk: BKOrientationGuard, через который пишутся метки.
+        a: узел со стрелкой в b.
+        b: центральный узел тройки.
+        c: узел с кружком у b.
+        unfVect: тройки, которые нельзя ориентировать (в v2 пусто).
+    """
+    if pag[a][c] != 0 or pag[a][b] != PAG_ARROW or pag[c][b] != PAG_CIRCLE:
+        return
+    if not _arrow_allowed(pag, b, c):
+        return
+    if unfVect and ((a, b, c) in unfVect or (c, b, a) in unfVect):
+        return
+    bk.set_mark(pag, b, c, PAG_ARROW)
+    bk.set_mark(pag, c, b, PAG_TAIL)
+
+
+def _rule_r2(pag, bk, a, b, c):
+    """R2: (a -> b *-> c или a *-> b -> c) и a *-o c => a *-> c.
+
+    Args:
+        pag: матрица PAG в раскладке whydra.
+        bk: BKOrientationGuard, через который пишутся метки.
+        a: начало цепочки.
+        b: середина цепочки.
+        c: узел с кружком на ребре a—c.
+    """
+    if pag[a][c] != PAG_CIRCLE:
+        return
+    if pag[a][b] == PAG_ARROW and pag[b][c] == PAG_ARROW and (
+            pag[b][a] == PAG_TAIL or pag[c][b] == PAG_TAIL):
+        bk.set_mark(pag, a, c, PAG_ARROW)
+
+
+def _rules_r1_r2_cycle(
+    pag,
+    bk,
+    unfVect,
+    apply_r1,
+    apply_r2,
+):
+    """Один проход R1 и R2 в порядке causal-learn ``rulesR1R2cycle``.
+
+    По узлам b по возрастанию индекса, по парам его соседей (a, c), a < c,
+    применяются R1(a,b,c), R1(c,b,a), R2(a,b,c), R2(c,b,a). Список соседей
+    берётся один раз на узел, как в оригинале.
+
+    Args:
+        pag: матрица PAG в раскладке whydra (меняется на месте).
+        bk: BKOrientationGuard, через который пишутся метки.
+        unfVect: тройки, которые нельзя ориентировать (в v2 пусто).
+        apply_r1: применять ли R1.
+        apply_r2: применять ли R2.
+    """
+    p = len(pag)
+    for b in range(p):
+        adj = [i for i in range(p) if pag[b][i] != 0]
+        for ia in range(len(adj)):
+            for ic in range(ia + 1, len(adj)):
+                a, c = adj[ia], adj[ic]
+                if apply_r1:
+                    _rule_r1(pag, bk, a, b, c, unfVect)
+                    _rule_r1(pag, bk, c, b, a, unfVect)
+                if apply_r2:
+                    _rule_r2(pag, bk, a, b, c)
+                    _rule_r2(pag, bk, c, b, a)
 
 
 # =============================================================================
@@ -490,49 +898,13 @@ def udag2pag_v2(pag, sepset, p, unfVect=None, rules=None, orientCollider=True,
     while not np.array_equal(old_pag1, pag):
         old_pag1 = copy.deepcopy(pag)
 
-        # R1
-        # [BUGFIX] v1 had inverted unfVect logic: `if len(unfVect) != 0` oriented
-        #          unconditionally, while `else` branch checked unfVect (backwards).
-        #          Fixed: when unfVect is EMPTY -> orient unconditionally.
-        #                 when unfVect is NON-EMPTY -> check membership first.
-        if rules[0]:
-            ind = []
-            for i in range(len(pag)):
-                for j in range(len(pag[i])):
-                    if pag[i][j] == PAG_ARROW and pag[j][i] != 0:
-                        ind.append((i, j))
-            ind = sorted(ind, key=lambda x: (x[1], x[0]))
-            for a, b in ind:
-                indC = [i for i in range(len(pag)) if
-                        pag[b][i] != 0 and pag[i][b] == PAG_CIRCLE and pag[a][i] == 0 and pag[i][a] == 0 and i != a]
-                if len(indC) != 0:
-                    if len(unfVect) == 0:
-                        # [BUGFIX] was `!= 0` in v1 — inverted
-                        for c in indC:
-                            _bk.set_mark(pag, b, c, PAG_ARROW)
-                            _bk.set_mark(pag, c, b, PAG_TAIL)
-                    else:
-                        for c in indC:
-                            if (a, b, c) not in unfVect and (c, b, a) not in unfVect:
-                                _bk.set_mark(pag, b, c, PAG_ARROW)
-                                _bk.set_mark(pag, c, b, PAG_TAIL)
-
-        # R2
-        # [BUGFIX] v1 had `pag[i][1]` (hardcoded index 1) instead of `pag[i][a]`.
-        if rules[1]:
-            ind = []
-            for i in range(len(pag)):
-                for j in range(len(pag[i])):
-                    if pag[i][j] == PAG_CIRCLE and pag[j][i] != 0:
-                        ind.append((i, j))
-            ind = sorted(ind, key=lambda x: (x[1], x[0]))
-            for a, c in ind:
-                indB = [i for i in range(len(pag)) if
-                        (pag[a][i] == PAG_ARROW and pag[i][a] == PAG_TAIL and pag[c][i] != 0 and pag[i][c] == PAG_ARROW) or
-                        (pag[a][i] == PAG_ARROW and pag[i][a] != 0 and pag[c][i] == PAG_TAIL and pag[i][c] == PAG_ARROW)]
-                #                              ^^^^^^ [BUGFIX] was pag[i][1] in v1
-                if len(indB) > 0:
-                    _bk.set_mark(pag, a, c, PAG_ARROW)
+        # R1 + R2 — в порядке causal-learn (rulesR1R2cycle): по узлам b и
+        # парам его соседей (a, c) чередуются R1(a,b,c), R1(c,b,a), R2(a,b,c),
+        # R2(c,b,a). Полный проход R1, затем R2 (порядок pcalg) на данных с
+        # противоречивыми тройками даёт другую неподвижную точку: на
+        # bnlearn/andes три ребра ориентировались R1 раньше, чем R2 успевал
+        # поставить стрелку, и итог расходился с causal-learn.
+        _rules_r1_r2_cycle(pag, _bk, unfVect, rules[0], rules[1])
 
         # R3
         if rules[2]:
@@ -820,16 +1192,25 @@ def udag2pag_v2(pag, sepset, p, unfVect=None, rules=None, orientCollider=True,
 #  Entry point: fci_stable_v2
 # =============================================================================
 
-def fci_stable_v2(cg, data, alpha=0.05, indep_test='fisherz', n_jobs=1,
-                  verbose=False, use_pds_path=True, background_knowledge=None,
-                  show_progress: bool = False):
-    """
-    FCI Stable Algorithm v2.
+def fci_stable_v2(
+    cg,
+    data,
+    alpha=0.05,
+    indep_test='fisherz',
+    n_jobs=1,
+    verbose=False,
+    use_pds_path=False,
+    m_max=float('inf'),
+    background_knowledge=None,
+    show_progress: bool = False,
+):
+    """FCI Stable v2: скелет -> Possible-D-SEP -> ориентация R0 + R1..R10.
 
-    Improvements over v1:
-      - Bug fixes in orientation rules R1, R2, R5, R10.
-      - pdsep step is parallelized via joblib (the main bottleneck).
-      - Optional pds_path optimization for smaller Possible-D-SEP sets.
+    Шаг Possible-D-SEP (``pdsep_v2``) следует семантике
+    ``removeByPossibleDsep`` из causal-learn 0.1.4.5: PDS по ребру (Tetrad
+    ``getPossibleDsep``), сепараторы размера не меньше 2, подмножества
+    adj(a)/adj(b) пропускаются, рёбра удаляются немедленно, порядок сторон
+    как у Edge в causal-learn. Ориентация — ``udag2pag_v2``.
 
     Parameters
     ----------
@@ -841,20 +1222,28 @@ def fci_stable_v2(cg, data, alpha=0.05, indep_test='fisherz', n_jobs=1,
     alpha : float
         Significance level for independence tests.
     indep_test : str
-        Independence test method (e.g. 'fisherz').
+        Independence test method (e.g. 'fisherz', 'chisq').
     n_jobs : int
-        Number of parallel jobs. 1 = sequential, -1 = all cores.
+        Number of parallel jobs. 1 = sequential, -1 = all cores. Результат
+        от ``n_jobs`` не зависит.
     verbose : bool
         Print progress information.
     use_pds_path : bool
-        If True, use biconnected-component restriction on Possible-D-SEP
-        (Definition 3.4 from Colombo et al. 2012). Reduces search space.
+        Ограничить Possible-D-SEP двусвязной компонентой проверяемого ребра
+        (Colombo et al. 2012, Def. 3.4). Отклонение от causal-learn, поэтому
+        по умолчанию выключено.
+    m_max : float
+        Максимальный размер сепаратора в Possible-D-SEP. Сепараторы
+        начинаются с размера 2, поэтому m_max < 2 отключает CI-тесты
+        этого шага. По умолчанию inf — без ограничения, результат прежний.
     background_knowledge : BackgroundKnowledge, optional
         Фоновые знания о направлениях рёбер. Применяются на трёх фазах:
         PRE_SEARCH (до поиска скелета — оттуда же берутся обязательные рёбра,
         которые запрещено удалять на шагах skeleton и pdsep),
         BETWEEN_ORIENTATION (после коллайдеров и после каждого прохода правил)
         и POST_ORIENTATION (после сходимости). ``None`` — полный no-op.
+    show_progress : bool
+        Прогресс-бар этапа скелета.
 
     Returns
     -------
@@ -898,27 +1287,23 @@ def fci_stable_v2(cg, data, alpha=0.05, indep_test='fisherz', n_jobs=1,
 
     suffStat = None
 
-    # Step 2: Conservative v-structure orientation
+    # Step 2: Possible-D-SEP (semantics of causal-learn, parallel via joblib)
     if verbose:
-        print("[FCI v2] Step 2: Conservative v-structure orientation...")
-    pc_cons_intern(graphDict, suffStat, alpha, test_func_wrapper, maj_rule=False)
-
-    # Step 3: Possible-D-SEP (PARALLELIZED)
-    if verbose:
-        print(f"[FCI v2] Step 3: Possible-D-SEP (n_jobs={n_jobs})...")
+        print(f"[FCI v2] Step 2: Possible-D-SEP (n_jobs={n_jobs})...")
     pdsep_res = pdsep_v2(
         graphDict, suffStat, test_func_wrapper, p,
         graphDict['sepset'], alpha, graphDict['pMax'],
         unfVect=graphDict['unfTriples'],
+        m_max=m_max,
         n_jobs=n_jobs,
         verbose=verbose,
         use_pds_path=use_pds_path,
         protected_edges=protected_edges,
     )
 
-    # Steps 4-5: Orient v-structures + R1-R10 (with bug fixes)
+    # Step 3: Orient v-structures + R1-R10
     if verbose:
-        print("[FCI v2] Steps 4-5: Orientation rules...")
+        print("[FCI v2] Step 3: Orientation rules...")
     pag = udag2pag_v2(pdsep_res['G'], pdsep_res['sepset'], p,
                       unfVect=graphDict['unfTriples'],
                       background_knowledge=background_knowledge,

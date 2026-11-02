@@ -55,8 +55,6 @@ from whydra.algorithms.wrappers import (
     StandaloneFCIStableParallelCached,
     StandaloneGFCIStable,
     StandalonePCStable,
-    StandaloneRAIOptimized,
-    StandaloneRAIStable,
     StandaloneRFCIStable,
 )
 from whydra.algorithms.standalone import (
@@ -235,14 +233,14 @@ def _wrapper_runner(cls):
 #: Сюда включены ВСЕ публичные обёртки, а не только PC и FCI. Пробел в покрытии
 #: обходится дорого: GFCI не сверялся ни с чем, и рассогласование кодировки в
 #: нём не поймал ни один тест — нашлось только ручной проверкой.
+#: RAI здесь нет: это другой алгоритм (другой представитель класса эквивалентности
+#: на тех же данных), его эталон — референс IntelLabs, см. test_vs_reference_rai.py.
 PC_IMPLS = {
     "pc_sequential": (_run_pc_sequential, False),
     "pc_parallel": (_run_pc_parallel, True),
     "pc_algo": (_run_pc_algo, True),
     "pc_wrapper": (_run_pc_wrapper, True),
     "pc_parallel_wrapper": (_wrapper_runner(ParallelPCStable), True),
-    "rai_stable": (_wrapper_runner(StandaloneRAIStable), True),
-    "rai_optimized": (_wrapper_runner(StandaloneRAIOptimized), True),
 }
 
 FCI_IMPLS = {
@@ -290,13 +288,6 @@ FAMILY.update({key: "FCI" for key in FCI_IMPLS})
 #: поэтому цикл правил выполнялся ровно один проход вместо схождения к
 #: неподвижной точке. После переноса ``return`` на уровень функции v1
 #: совпадает с causal-learn на всём наборе.
-_RAI_IS_A_DIFFERENT_ALGORITHM = (
-    "RAI — не PC: он рекурсивно разбивает граф на автономные подструктуры и "
-    "ориентирует их по ходу, поэтому на плотных графах приходит к другому "
-    "(допустимому) представителю класса эквивалентности. Эталон здесь — PC из "
-    "causal-learn, и расхождение ожидаемо, а не дефектно."
-)
-
 _GFCI_IS_HYBRID = (
     "GFCI — гибрид: стартует со score-based CPDAG (GES) и доориентирует его "
     "правилами FCI. Эталон сравнения — чисто constraint-based FCI из "
@@ -305,18 +296,13 @@ _GFCI_IS_HYBRID = (
 )
 
 KNOWN_DEVIATIONS = {
-    ("rai_stable", "dag_8"): _RAI_IS_A_DIFFERENT_ALGORITHM,
-    ("rai_optimized", "dag_8"): _RAI_IS_A_DIFFERENT_ALGORITHM,
     ("gfci", "diamond_5"): _GFCI_IS_HYBRID,
 }
 
 #: Расхождения в скелете (множестве рёбер). Пусто: на текущем наборе графов
 #: все реализации находят те же рёбра, что и causal-learn, расходясь только
 #: в ориентации.
-KNOWN_SKELETON_DEVIATIONS = {
-    ("rai_stable", "dag_8"): _RAI_IS_A_DIFFERENT_ALGORITHM,
-    ("rai_optimized", "dag_8"): _RAI_IS_A_DIFFERENT_ALGORITHM,
-}
+KNOWN_SKELETON_DEVIATIONS = {}
 
 #: Расхождения между последовательной и параллельной реализациями одного
 #: алгоритма: (ключ параллельной реализации, ключ графа) -> причина.

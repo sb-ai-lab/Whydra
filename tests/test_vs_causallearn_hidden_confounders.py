@@ -305,6 +305,21 @@ _PDSEP_BLIND_SPOT = (
     "верно и в whydra, и в pcalg."
 )
 
+#: fci_v2 (и обёртка StandaloneFCIStable) считает Possible-D-SEP по семантике
+#: causal-learn, но не воспроизводит его баг перечисления: в
+#: ``removeByPossibleDsep`` ``DepthChoiceGenerator`` отдаёт один и тот же
+#: список, и ``origin_choice`` мутирует после ``gen.next()`` — первое сочетание
+#: каждого размера никогда не тестируется. На ``confounded_network`` PDS(X4, X3)
+#: у обоих равен [X7, X6, X5]; causal-learn пропускает {X7, X6}, whydra его
+#: проверяет, получает p = 0.28 и удаляет X3–X4 (ошибка второго рода на
+#: конечной выборке — истинный PAG содержит X3 <-> X4). Совпадение с causal-learn
+#: здесь возможно только ценой воспроизведения его бага.
+_CL_DEPTH_CHOICE_ALIASING = (
+    "causal-learn из-за алиасинга списка в DepthChoiceGenerator не тестирует первое "
+    "сочетание каждого размера в шаге Possible-D-SEP (здесь — {X6, X7} для X3–X4); "
+    "whydra тестирует все сочетания, находит p = 0.28 и удаляет X3–X4."
+)
+
 KNOWN_DEVIATIONS_FROM_CL = {
     ("fci_sequential", "confounded_network"): _PDSEP_BLIND_SPOT,
     ("fci_cached", "confounded_network"): _PDSEP_BLIND_SPOT,
@@ -312,6 +327,8 @@ KNOWN_DEVIATIONS_FROM_CL = {
     ("cfci", "confounded_network"): _PDSEP_BLIND_SPOT,
     ("cfci_parallel_cached", "confounded_network"): _PDSEP_BLIND_SPOT,
     ("gfci", "confounded_network"): _PDSEP_BLIND_SPOT,
+    ("fci_v2", "confounded_network"): _CL_DEPTH_CHOICE_ALIASING,
+    ("fci_wrapper", "confounded_network"): _CL_DEPTH_CHOICE_ALIASING,
 }
 KNOWN_DEVIATIONS_FROM_TRUTH = dict(KNOWN_DEVIATIONS_FROM_CL)
 

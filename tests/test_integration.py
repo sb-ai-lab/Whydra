@@ -37,7 +37,6 @@ class TestAvailableAlgorithms:
         algos = available_standalone_algorithms()
         assert "StandalonePCStable" in algos
         assert "StandaloneFCIStable" in algos
-        assert "StandaloneRAIOptimized" in algos
         assert "StandaloneRAIStable" in algos
 
 
@@ -95,13 +94,6 @@ class TestUnifiedAPI:
         W = get_chain_graph_3nodes()
         data = generate_linear_sem_data(W, n_samples=500, noise_std=1.0, seed=42)
         graph = run_standalone_algorithm("rai_stable", data, alpha=0.05, n_jobs=1)
-        assert has_edge(graph, 0, 1)
-        assert has_edge(graph, 1, 2)
-
-    def test_run_rai_optimized_via_unified_api(self):
-        W = get_chain_graph_3nodes()
-        data = generate_linear_sem_data(W, n_samples=500, noise_std=1.0, seed=42)
-        graph = run_standalone_algorithm("rai_optimized", data, alpha=0.05)
         assert has_edge(graph, 0, 1)
         assert has_edge(graph, 1, 2)
 

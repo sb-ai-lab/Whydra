@@ -100,6 +100,83 @@ def fisher_z_from_corr(corr_matrix, n_samples, x, y, condition_set) -> float:
     return 2 * (1 - norm.cdf(stat))
 
 
+def chi_square_from_encoded(
+    data_int,
+    cardinalities,
+    n_samples,
+    X,
+    Y,
+    condition_set,
+) -> float:
+    """Хи-квадрат p-value для ``X ⟂ Y | condition_set`` на закодированных данных.
+
+    Свободная функция с телом ``CIT.chi_square`` (та же арифметика, тот же
+    порядок операций): нужна, чтобы процессы-воркеры RAI и сам ``CIT`` считали
+    побитово одинаковые p-value на одних и тех же массивах.
+
+    Args:
+        data_int: целочисленная матрица данных (n_samples x n_vars), коды уровней.
+        cardinalities: число уровней каждой переменной.
+        n_samples: число наблюдений.
+        X: индекс первой переменной.
+        Y: индекс второй переменной.
+        condition_set: индексы переменных условия.
+
+    Returns:
+        p-value теста хи-квадрат.
+    """
+    X_data = data_int[:, X]
+    Y_data = data_int[:, Y]
+    if len(condition_set) == 0:
+        obs = np.bincount(
+            X_data * cardinalities[Y] + Y_data,
+            minlength=cardinalities[X] * cardinalities[Y]
+        ).reshape(cardinalities[X], cardinalities[Y])
+        row_sum = obs.sum(axis=1)
+        col_sum = obs.sum(axis=0)
+        expected = np.outer(row_sum, col_sum) / n_samples
+        valid = expected > 0
+        stat = np.sum((obs[valid] - expected[valid]) ** 2 / expected[valid])
+        df = (cardinalities[X] - 1) * (cardinalities[Y] - 1)
+        return chi2.sf(stat, df)
+    if len(condition_set) == 1:
+        Z_data = data_int[:, condition_set[0]]
+    else:
+        Z_cols = data_int[:, condition_set]
+        dims = cardinalities[list(condition_set)]
+        Z_data = np.ravel_multi_index(Z_cols.T, dims)
+    unique_z = np.unique(Z_data)
+    total_stat = 0
+    total_df = 0
+    for z_val in unique_z:
+        mask = Z_data == z_val
+        x_sub = X_data[mask]
+        y_sub = Y_data[mask]
+        n_sub = len(x_sub)
+        if n_sub < 2:
+            continue
+        obs = np.bincount(
+            x_sub * cardinalities[Y] + y_sub,
+            minlength=cardinalities[X] * cardinalities[Y]
+        ).reshape(cardinalities[X], cardinalities[Y])
+        obs = obs[obs.sum(axis=1) > 0, :]
+        obs = obs[:, obs.sum(axis=0) > 0]
+        if obs.shape[0] < 2 or obs.shape[1] < 2:
+            continue
+        row_sum = obs.sum(axis=1)
+        col_sum = obs.sum(axis=0)
+        expected = np.outer(row_sum, col_sum) / n_sub
+        valid = expected > 0
+        if valid.sum() > 0:
+            stat = np.sum((obs[valid] - expected[valid]) ** 2 / expected[valid])
+            df = (obs.shape[0] - 1) * (obs.shape[1] - 1)
+            total_stat += stat
+            total_df += df
+    if total_df == 0:
+        return 1.0
+    return chi2.sf(total_stat, total_df)
+
+
 def _check_shape(data) -> np.ndarray:
     data = np.asarray(data)
     if data.ndim != 2:
@@ -213,60 +290,13 @@ class CIT:
 
     @profile
     def chi_square(self, X, Y, condition_set):
-        X_data = self.data_int[:, X]
-        Y_data = self.data_int[:, Y]
-        if len(condition_set) == 0:
-            obs = np.bincount(
-                X_data * self.cardinalities[Y] + Y_data,
-                minlength=self.cardinalities[X] * self.cardinalities[Y]
-            ).reshape(self.cardinalities[X], self.cardinalities[Y])
-            row_sum = obs.sum(axis=1)
-            col_sum = obs.sum(axis=0)
-            expected = np.outer(row_sum, col_sum) / self.n_samples
-            valid = expected > 0
-            stat = np.sum((obs[valid] - expected[valid]) ** 2 / expected[valid])
-            df = (self.cardinalities[X] - 1) * (self.cardinalities[Y] - 1)
-            return chi2.sf(stat, df)
-        if len(condition_set) == 1:
-            Z_data = self.data_int[:, condition_set[0]]
-        else:
-            Z_cols = self.data_int[:, condition_set]
-            dims = self.cardinalities[list(condition_set)]
-            Z_data = np.ravel_multi_index(Z_cols.T, dims)
-        unique_z = np.unique(Z_data)
-        total_stat = 0
-        total_df = 0
-        for z_val in unique_z:
-            mask = Z_data == z_val
-            x_sub = X_data[mask]
-            y_sub = Y_data[mask]
-            n_sub = len(x_sub)
-            if n_sub < 2:
-                continue
-            obs = np.bincount(
-                x_sub * self.cardinalities[Y] + y_sub,
-                minlength=self.cardinalities[X] * self.cardinalities[Y]
-            ).reshape(self.cardinalities[X], self.cardinalities[Y])
-            obs = obs[obs.sum(axis=1) > 0, :]
-            obs = obs[:, obs.sum(axis=0) > 0]
-            if obs.shape[0] < 2 or obs.shape[1] < 2:
-                continue
-            row_sum = obs.sum(axis=1)
-            col_sum = obs.sum(axis=0)
-            expected = np.outer(row_sum, col_sum) / n_sub
-            valid = expected > 0
-            if valid.sum() > 0:
-                stat = np.sum((obs[valid] - expected[valid]) ** 2 / expected[valid])
-                df = (obs.shape[0] - 1) * (obs.shape[1] - 1)
-                total_stat += stat
-                total_df += df
-        if total_df == 0:
-            return 1.0
-        return chi2.sf(total_stat, total_df)
+        """Хи-квадрат тест; считает ``chi_square_from_encoded`` на массивах CIT."""
+        return chi_square_from_encoded(self.data_int, self.cardinalities, self.n_samples, X, Y, condition_set)
 
 
 __all__ = [
     "CIT",
+    "chi_square_from_encoded",
     "DegenerateColumnWarning",
     "DISCRETE_TESTS",
     "CONTINUOUS_TESTS",

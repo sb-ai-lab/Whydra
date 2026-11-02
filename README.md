@@ -29,7 +29,9 @@ graph = StandalonePCStable(alpha=0.05, indep_test="fisherz", n_jobs=4).run(data)
 print([str(edge) for edge in graph.get_graph_edges()])  # ['X1 --> X3', 'X2 --> X3']
 ```
 
-Доступные алгоритмы: `StandalonePCStable`, `ParallelPCStable`, `StandaloneFCIStable` (и варианты с кэшем CI-тестов `StandaloneFCIStableCached`, `StandaloneFCIStableParallelCached`), `StandaloneCFCIStable`, `StandaloneRFCIStable`, `StandaloneGFCIStable`, `StandaloneFCIPlusStable`, `StandaloneRAIStable`, `StandaloneRAIOptimized`. Алгоритм можно создать и по имени: `whydra.create_standalone_algorithm("rfci_stable", alpha=0.01)`. Тесты независимости: `fisherz` (непрерывные данные) и `chisq` (дискретные).
+Доступные алгоритмы: `StandalonePCStable`, `ParallelPCStable`, `StandaloneFCIStable` (и варианты с кэшем CI-тестов `StandaloneFCIStableCached`, `StandaloneFCIStableParallelCached`), `StandaloneCFCIStable`, `StandaloneRFCIStable`, `StandaloneGFCIStable`, `StandaloneFCIPlusStable`, `StandaloneRAIStable`. Алгоритм можно создать и по имени: `whydra.create_standalone_algorithm("rfci_stable", alpha=0.01)`. Тесты независимости: `fisherz` (непрерывные данные) и `chisq` (дискретные).
+
+`rai_stable` использует реализацию RAI на основе IntelLabs causality-lab. Тесты условной независимости могут выполняться параллельно, а решения об удалении рёбер принимаются последовательно. Старые имена `rai_optimized` и `StandaloneRAIOptimized` удалены; используйте `rai_stable` и `StandaloneRAIStable`.
 
 ## Лицензия
 
@@ -93,10 +95,10 @@ cfci_stable, cfci_stable_paralel_cash
 rfci_stable
 gfci_stable
 fci_plus_stable, fci_plus_stable_paralel_cash
-rai_stable, rai_optimized
+rai_stable
 ```
 
-Для запуска параллельной версии алгоритмов необходимо заполнить количество параллельных потоков в соответствующем файле алгоритма. При отсутствии переменной или при значении 1 расчет запускается в последовательном режиме.
+Параллелизм задаётся параметром `n_jobs`; для последовательного режима явно укажите `n_jobs=1`. У `StandaloneRAIStable` по умолчанию `n_jobs=4`, у функции `rai_stable` — `n_jobs=-1` (все ядра). Пример для Hydra: `algorithm=rai_stable +algorithm.n_jobs=1`.
 ```
 n_jobs: 6
 ```

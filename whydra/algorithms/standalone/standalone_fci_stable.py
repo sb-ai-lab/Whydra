@@ -4,95 +4,9 @@ import numpy as np
 
 # Импортируем универсальный класс тестов из соседнего файла
 from ..graph_core import CIT
-from .pag_rules import PAG_ARROW, PAG_CIRCLE, powerset, qreach, udag2pag
+from .pag_rules import PAG_ARROW, PAG_CIRCLE, qreach, udag2pag
 
 # --- Вспомогательные функции ---
-
-def checkTriple(a, b, c, nbrsA, nbrsC, sepsetA, sepsetC, suffStat, alpha, indepTest, maj_rule=True):
-    nr_indep = 0
-    temp = []
-
-    if len(nbrsA) > 0:
-        for s in powerset(nbrsA):
-            pval = indepTest(suffStat, a, c, list(s))
-            if pval >= alpha:
-                nr_indep += 1
-                temp.append(b in s)
-
-    if len(nbrsC) > 0:
-        for s in powerset(nbrsC):
-            pval = indepTest(suffStat, a, c, list(s))
-            if pval >= alpha:
-                nr_indep += 1
-                temp.append(b in s)
-
-    newsepsetA = set(sepsetA) if sepsetA is not None else set()
-    newsepsetC = set(sepsetC) if sepsetC is not None else set()
-
-    if len(temp) == 0:
-        temp.append(False)
-
-    res = 3
-    if maj_rule:
-        if sum(temp) / len(temp) < .5:
-            res = 1
-            if b in newsepsetA: newsepsetA.remove(b)
-            if b in newsepsetC: newsepsetC.remove(b)
-        elif sum(temp) / len(temp) > .5:
-            res = 2
-            newsepsetA.add(b)
-            newsepsetC.add(b)
-        else:
-            pass
-    else:
-        if sum(temp) / len(temp) == 0:
-            res = 1
-            if b in newsepsetA: newsepsetA.remove(b)
-            if b in newsepsetC: newsepsetC.remove(b)
-        elif sum(temp) / len(temp) == 1:
-            res = 2
-            newsepsetA.add(b)
-            newsepsetC.add(b)
-        else:
-            pass
-
-    return res, {'sepsetA': newsepsetA, 'sepsetC': newsepsetC}
-
-
-def pc_cons_intern(graphDict, suffstat, alpha, indepTest, version_unf=(None, None), maj_rule=True,
-                   verbose=False):
-    sk = graphDict['sk']
-    p = sk.shape[0]
-
-    if np.any(sk):
-        # Сортировка индексов как в pcalg для воспроизводимости
-        ind = np.transpose(np.where(sk != 0))
-        ind = ind[ind[:, 1].argsort()]
-
-        tripleMatrix = []
-        for a, b in ind:
-            for c in range(p):
-                if a < c and sk[a, c] == 0 and sk[b, c] != 0:
-                    tripleMatrix.append((a, b, c))
-
-        for a, b, c in tripleMatrix:
-            nbrsA = np.where(sk[:, a] != 0)[0]
-            nbrsC = np.where(sk[:, c] != 0)[0]
-
-            res, r_abc = checkTriple(a, b, c, nbrsA, nbrsC, graphDict['sepset'][(a, c)],
-                                     graphDict['sepset'][(c, a)],
-                                     suffstat, alpha, indepTest, maj_rule=maj_rule)
-            if res == 3:
-                if 'unfTriples' in graphDict.keys():
-                    graphDict['unfTriples'].add((a, b, c))
-                else:
-                    graphDict['unfTriples'] = {(a, b, c)}
-
-            graphDict['sepset'][(a, c)] = r_abc['sepsetA']
-            graphDict['sepset'][(c, a)] = r_abc['sepsetC']
-
-    return graphDict
-
 
 def skeleton(suffStat, indepTest, alpha, labels, method,
              fixedGaps, fixedEdges,
@@ -229,7 +143,23 @@ def pdsep(skel, suffStat, indepTest, p, sepSet, alpha, pMax, m_max=float('inf'),
     return {'G': G, "sepset": sepSet, "pMax": pMax, "allPdsep": allPdsep_tmp, "max_ord": ord}
 
 
-def fci_stable(data, alpha=0.05, indep_test='fisherz', verbose=False):
+def fci_stable(
+    data,
+    alpha=0.05,
+    indep_test='fisherz',
+    verbose=False,
+):
+    """Строит PAG классическим алгоритмом FCI-Stable.
+
+    Args:
+        data: матрица наблюдений, строки — объекты, столбцы — переменные.
+        alpha: порог независимости.
+        indep_test: название CI-теста.
+        verbose: печатать промежуточные результаты.
+
+    Returns:
+        Матрица PAG с метками концов рёбер.
+    """
     n, p = data.shape
 
     # Инициализируем универсальный CIT
@@ -249,7 +179,9 @@ def fci_stable(data, alpha=0.05, indep_test='fisherz', verbose=False):
     if verbose:
         print(f'graphDict skeleton {graphDict}')
 
-    pc_cons_intern(graphDict, suffStat, alpha, test_func_wrapper, maj_rule=False)
+    # Классический FCI-Stable не содержит консервативного шага: causal-learn fci
+    # и pcalg fci() по умолчанию его не вызывают. С проверкой != 0 прежний
+    # вызов превращал v1 в консервативный FCI.
     if verbose:
         print(f'graphDict before pdsep {graphDict}')
         print(f'graphDict before suffStat {suffStat}')

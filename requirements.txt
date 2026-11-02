@@ -21,7 +21,8 @@ PyYAML>=6.0
 tqdm==4.67.1
 
 # Data I/O
-pyarrow
+# pyarrow 21+ собран только под NumPy 2 и роняет импорт sklearn при numpy==1.26.4
+pyarrow<21
 
 # Parallelization
 joblib==1.5.2

@@ -6,6 +6,7 @@
 выбираемая базовым классом.
 """
 
+import importlib.util
 import warnings
 from types import SimpleNamespace
 
@@ -84,11 +85,24 @@ def test_registry_is_not_empty_and_names_are_class_names():
     ("fci_stable", "StandaloneFCIStable"),
     ("rfci_stable", "StandaloneRFCIStable"),
     ("gfci_stable", "StandaloneGFCIStable"),
-    ("rai_optimized", "StandaloneRAIOptimized"),
+    ("rai_stable", "StandaloneRAIStable"),
     ("StandalonePCStable", "StandalonePCStable"),
 ])
 def test_aliases_resolve_case_and_separator_insensitively(alias, expected):
     assert type(create_standalone_algorithm(alias)).__name__ == expected
+
+
+@pytest.mark.parametrize("name", ["rai_optimized", "standaloneraioptimized", "StandaloneRAIOptimized"])
+def test_removed_rai_api_is_unavailable(name):
+    """Reject removed RAI names and verify the wrapper and module are absent."""
+    assert name not in available_standalone_algorithms()
+    with pytest.raises(ValueError, match="Unknown standalone algorithm"):
+        create_standalone_algorithm(name)
+    assert not hasattr(wrappers_module, "StandaloneRAIOptimized")
+    assert not hasattr(whydra.algorithms, "StandaloneRAIOptimized")
+    assert importlib.util.find_spec(
+        "whydra.algorithms.standalone.standalone_raioptimized"
+    ) is None
 
 
 def test_unknown_algorithm_lists_the_available_ones():

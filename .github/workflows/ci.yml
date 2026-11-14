@@ -33,10 +33,18 @@ jobs:
             pyproject.toml
             docs/requirements.txt
       - name: Install development dependencies
-        run: python -m pip install -e ".[dev,comparison]" -r docs/requirements.txt
+        run: |
+          if [[ -f docs/requirements.txt ]]; then
+            python -m pip install -e ".[dev,comparison]" -r docs/requirements.txt
+          else
+            python -m pip install -e ".[dev,comparison,docs,viz]"
+          fi
       - name: Code health
         run: |
-          python -m compileall -q whydra whydra_benchmarks tests main.py .github
+          python -m compileall -q whydra tests .github
+          if [[ -d whydra_benchmarks ]]; then
+            python -m compileall -q whydra_benchmarks main.py
+          fi
           python -m pre_commit run --all-files
       - name: Tests
         run: python -m pytest -q

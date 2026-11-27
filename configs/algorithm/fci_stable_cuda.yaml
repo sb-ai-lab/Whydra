@@ -1,0 +1,5 @@
+_target_: whydra.algorithms.wrappers.StandaloneFCIStable
+alpha: 0.05
+indep_test: fisherz
+n_jobs: 1
+device: cuda

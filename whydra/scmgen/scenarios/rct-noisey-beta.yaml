@@ -1,0 +1,90 @@
+name: rct-noisey-beta
+graph:
+  n_confounders: 5
+  n_modifiers: 3
+  n_predictors: 5
+  n_noise: 5
+  n_instruments: 0
+  n_mediators: 0
+  n_colliders: 0
+  n_med_confounders: 0
+  n_med_predictors: 0
+  n_upstream: 0
+  n_side: 0
+  direct_effect: true
+  roles: null
+  xx_density: 0.1
+  adjacency: null
+  role_order: shuffled
+  xx_structure: er
+  max_in_degree: null
+  sf_gamma: 2.5
+  blocks_k: 3
+  p_in: 0.4
+  p_out: 0.02
+  layers_l: 4
+  layer_skip: 0.0
+  copy_share: 0.5
+  copy_fidelity: 1.0
+  n_binary: 0
+  n_categorical: 0
+  categorical_levels: 4
+  binary_rate:
+  - 0.05
+  - 0.5
+  categorical_skew: 0.0
+  discrete_roles: null
+mechanism:
+  kind: linear
+  interaction: 0.0
+tau:
+  amplitude: 1.0
+  sparsity: 0.0
+  form: linear
+  offset: 0.0
+  level_slope: 0.0
+treatment:
+  mode: rct
+  propensity: 0.5
+  confounding: 1.0
+outcome:
+  family: beta
+  snr: 1.0
+  base_rate: 0.1
+  zero_mass: 0.8
+  heavy_tails: false
+  base_mean: 0.3
+  beta_phi: 10.0
+  zero_mass_beta: 0.0
+  one_mass_beta: 0.0
+  beta_tau_on: mean
+  beta_mass_scale: 1.0
+  coupling: shared
+  scale_sigma: 0.0
+  scale_feature: null
+  base_level: 1.0
+  level_sigma: 1.0
+  noise_sigma: 1.0
+  zero_mass_ln: 0.0
+  pre_periods: 0
+  pre_rho: 0.7
+  pre_drift: 0.0
+segments:
+  n_segments: 8
+  features: null
+pathologies:
+- kind: noise_y
+  strength: 0.8
+  target: segments
+  segments: null
+  segment_share: 0.25
+  params: {}
+mediator:
+  family: gaussian
+  base_amplitude: 1.0
+  base_rate: 0.1
+  effect: 0.5
+  effect_amplitude: 0.0
+  effect_sparsity: 0.0
+  theta: 1.0
+  theta_amplitude: 0.0

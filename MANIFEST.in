@@ -1,0 +1,13 @@
+recursive-include tests *.py
+include CONTRIBUTORS.md
+include docs/whydra-logo.png
+include docs/contributors/*.png
+include docs/CODE_PROVENANCE.md
+prune whydra_benchmarks
+prune playground
+include whydra/algorithms/graph_core/_fisher_native.cpp
+include whydra/algorithms/graph_core/_pdsep_native.hpp
+recursive-include tests/fixtures *.json
+global-exclude *.pyd *.so *.dll
+include setup.py
+recursive-include whydra/algorithms/graph_core *.cu *.cuh *.cpp *.hpp

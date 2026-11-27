@@ -1,0 +1,189 @@
+[build-system]
+requires = ["setuptools>=77.0.3"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "whydra"
+dynamic = ["version"]
+description = "A library for causal graph building and uplift effect estimation in banking enterprise settings"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+license-files = ["LICENSE", "THIRD_PARTY_LICENSES/*.txt", "THIRD_PARTY_LICENSES/README.md"]
+
+classifiers = [
+    "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+dependencies = [
+    "numpy>=1.24",
+    "pandas>=1.5",
+    "PyYAML>=6",
+    "scipy>=1.10",
+    "joblib>=1.4",
+    "tqdm>=4.67",
+    "networkx>=3.1",
+]
+
+[project.urls]
+Documentation = "https://sb-ai-lab.github.io/Whydra/"
+
+[project.optional-dependencies]
+io = ["pyarrow>=15,<21"]
+dev = [
+    "pytest>=7",
+    "setuptools>=77.0.3",  # native build tests exercise build_ext
+    "ruff==0.17.3",
+    "clang-format==23.1.4",
+    "clang-tidy==23.1.4",
+    "mypy==2.4.1",
+    "basedpyright==1.40.2",
+    "types-PyYAML>=6",
+    "pre-commit>=4,<5",
+    "commitizen==4.19.3",
+    "build>=1,<2",
+    "coverage>=7",
+]
+# Optional graph conversion via to_causallearn.
+comparison = [
+    "causal-learn>=0.1.4",
+]
+torch = ["torch"]
+viz = ["pydot>=2"]
+docs = ["sphinx>=8.1.3", "sphinx-rtd-theme>=3.1", "sphinx-autobuild>=2024.10.3", "myst-parser>=3"]
+
+[tool.commitizen]
+name = "cz_conventional_commits"
+allowed_prefixes = ["Merge ", 'Revert "']
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["whydra", "whydra.*"]
+
+[tool.setuptools.dynamic]
+version = {file = "whydra/VERSION"}
+
+[tool.setuptools.exclude-package-data]
+# Locally compiled binaries are built by build_ext for the target interpreter;
+# never copy a checkout's ARM64/x64 extension into a portable source install.
+"*" = ["*.pyd", "*.so", "*.dll"]
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.package-data]
+whydra = [
+    "VERSION",
+    "algorithms/graph_core/*.cu",
+    "algorithms/graph_core/*.cuh",
+    "algorithms/graph_core/*.cpp",
+    "algorithms/graph_core/*.hpp",
+]
+"whydra.scmgen.scenarios" = ["*.yaml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"
+markers = [
+    "cuda: requires PyTorch and a CUDA-capable GPU",
+    "torch: requires PyTorch; no CUDA device needed",
+    "slow: long-running CUDA or numerical suite",
+]
+
+[tool.coverage.run]
+branch = false
+
+[tool.coverage.report]
+precision = 0
+show_missing = true
+
+[tool.ruff]
+line-length = 88
+target-version = "py310"  # Whydra's minimum supported Python.
+
+[tool.ruff.lint]
+select = [
+    "B",    # flake8-bugbear: subtle bugs and mutable defaults
+    "C4",   # flake8-comprehensions: cleaner list/dict/set comprehensions
+    "D",    # pydocstyle: docstring standards for public APIs
+    "E",    # pycodestyle errors
+    "F",    # Pyflakes: unused imports and variables
+    "I",    # isort: deterministic import sorting
+    "NPY",  # NumPy-specific rules: deprecated APIs and legacy random usage
+    "PT",   # flake8-pytest-style: consistent unit tests
+    "RUF",  # Ruff-specific rules
+    "SIM",  # flake8-simplify: readable boolean expressions and control flow
+    "UP",   # pyupgrade: syntax supported by the project's Python version
+]
+ignore = [
+    "D100",  # Allow modules without a docstring.
+    "D104",  # Allow packages without a docstring.
+    "D105",  # Allow magic methods without a docstring.
+    "E501",  # Let the formatter target 88 columns.
+    "RUF002",  # Allow Cyrillic text and mathematical symbols in docstrings.
+    "RUF003",  # Allow Cyrillic text and mathematical symbols in comments.
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "numpy"
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["D"]  # Tests may omit docstrings.
+
+[tool.basedpyright]
+include = ["whydra"]
+pythonVersion = "3.10"
+typeCheckingMode = "standard" # Better balance than "all" for scientific stacks
+reportAny = false
+reportExplicitAny = false
+reportUnknownMemberType = false
+reportUnknownArgumentType = false
+reportUnknownVariableType = false
+reportMissingTypeStubs = false
+reportUnusedCallResult = false
+enableTypeIgnoreComments = false
+reportInconsistentConstructor = "error"
+reportMatchNotExhaustive = "error"
+reportUnnecessaryTypeIgnoreComment = "error"
+
+[tool.mypy]
+files = ["whydra"]
+# Existing numerical modules with unresolved type errors. New modules are
+# checked automatically. Remove a name when its existing errors are corrected.
+exclude = '''(?x)^whydra/(
+    (
+        background_knowledge | algorithms/wrappers | data/case_repository |
+        evaluation/metrics |
+        algorithms/graph_core/(cache|ci_batch|execution_policy|independence_tests|
+            native_fisher|ordered_ci|process_execution|validation|worker_data) |
+        algorithms/score_based/(_covariance_bic|_ges_scan|_gram_scan|ges|pdag|scores) |
+        algorithms/standalone/(_counted_ci|cfci_algo|cfci_algo_paralel_cash|
+            ci_adapters|compact_pdsep|conservative_triples|dag_gnn/runner|
+            fci_algo_cash|fci_algo_paralel_cash|fci_algo_v2|fci_plus_algo|
+            fci_plus_algo_paralel_cash|fci_plus_search|fisher_skeleton|gfci_algo|
+            hierarchy_cache|parallel_pc_stable|pc_algo|profiler|rai_algo|rfci_algo|
+            separators|skeleton|standalone_fci_stable|standalone_pc_stable)
+    ) \.py$
+)'''
+python_version = "3.10"
+follow_imports = "silent"
+check_untyped_defs = true
+warn_redundant_casts = true
+
+[[tool.mypy.overrides]]
+module = [
+    "causallearn.*", "joblib.*", "line_profiler.*", "networkx.*", "pandas.*",
+    "scipy.*", "torch.*", "tqdm.*",
+]
+ignore_missing_imports = true

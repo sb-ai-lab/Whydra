@@ -1,0 +1,398 @@
+"""Test the public algorithm registry, data loading, and wrapper contracts.
+
+Loaders must preserve the first observation in a headerless file.
+Wrappers must accept common parameters and return graphs with the
+appropriate endpoint encoding.
+"""
+
+import importlib.util
+import warnings
+from types import SimpleNamespace
+
+import numpy as np
+import pytest
+
+import whydra
+import whydra.algorithms.wrappers as wrappers_module
+from whydra.algorithms.base import CausalAlgorithm
+from whydra.algorithms.wrappers import (
+    _load_data_like_main,
+    _text_table_has_header,
+    available_standalone_algorithms,
+    create_standalone_algorithm,
+    run_standalone_algorithm,
+)
+from whydra.background_knowledge import MatrixEncoding
+from whydra.evaluation.graph_utils import get_adj_matrix
+
+NULL, TAIL, ARROW, CIRCLE = 0, -1, 1, 2
+
+
+#: Algorithms available without heavy optional dependencies.
+def _available():
+    keys = []
+    for name in available_standalone_algorithms():
+        try:
+            create_standalone_algorithm(name, alpha=0.05, n_jobs=1)
+        except ImportError:
+            continue
+        keys.append(name)
+    return keys
+
+
+AVAILABLE = _available()
+
+
+def _common_algorithm_kwargs(algo_key, **overrides):
+    params = {
+        "alpha": 0.05,
+        "n_jobs": 1,
+        "verbose": False,
+        "show_progress": False,
+    }
+    # DagGNN is in AVAILABLE when torch is installed. Limit training so these
+    # contract tests do not run the full 300-epoch benchmark.
+    if str(algo_key).lower() == "daggnn":
+        params.update(epochs=1, batch_size=400, k_max_iter=1)
+    params.update(overrides)
+    return params
+
+
+@pytest.fixture(scope="module")
+def data():
+    rng = np.random.default_rng(4)
+    X = rng.standard_normal((400, 5))
+    for a, b in [(0, 2), (1, 2), (2, 3), (3, 4)]:
+        X[:, b] += 1.2 * X[:, a]
+    return X
+
+
+# ============================================================
+# Algorithm registry
+# ============================================================
+
+
+def test_registry_is_not_empty_and_names_are_class_names():
+    names = available_standalone_algorithms()
+    assert len(names) >= 13
+    assert all(n[0].isupper() for n in names)
+
+
+@pytest.mark.parametrize(
+    ("alias", "expected"),
+    [
+        ("pc_stable", "StandalonePCStable"),
+        ("PC_STABLE", "StandalonePCStable"),
+        ("pc-stable", "StandalonePCStable"),
+        (" pc stable ", "StandalonePCStable"),
+        ("fci_stable", "StandaloneFCIStable"),
+        ("rfci_stable", "StandaloneRFCIStable"),
+        ("gfci_stable", "StandaloneGFCIStable"),
+        ("rai_stable", "StandaloneRAIStable"),
+        ("StandalonePCStable", "StandalonePCStable"),
+    ],
+)
+def test_aliases_resolve_case_and_separator_insensitively(alias, expected):
+    assert type(create_standalone_algorithm(alias)).__name__ == expected
+
+
+@pytest.mark.parametrize(
+    "name", ["rai_optimized", "standaloneraioptimized", "StandaloneRAIOptimized"]
+)
+def test_removed_rai_api_is_unavailable(name):
+    """Reject removed RAI names and verify the wrapper and module are absent."""
+    assert name not in available_standalone_algorithms()
+    with pytest.raises(ValueError, match="Unknown standalone algorithm"):
+        create_standalone_algorithm(name)
+    assert not hasattr(wrappers_module, "StandaloneRAIOptimized")
+    assert not hasattr(whydra.algorithms, "StandaloneRAIOptimized")
+    assert (
+        importlib.util.find_spec("whydra.algorithms.standalone.standalone_raioptimized")
+        is None
+    )
+
+
+def test_unknown_algorithm_lists_the_available_ones():
+    with pytest.raises(ValueError, match="Unknown standalone algorithm"):
+        create_standalone_algorithm("does not exist")
+
+
+def test_optional_dependencies_fail_with_a_readable_message():
+    """The package must import even when a heavy dependency is missing."""
+    optional = set(available_standalone_algorithms()) - set(AVAILABLE)
+    for name in optional:
+        with pytest.raises(ImportError, match="requires"):
+            create_standalone_algorithm(name)
+
+
+def test_every_wrapper_subclasses_the_base_contract():
+    for name in AVAILABLE:
+        assert isinstance(create_standalone_algorithm(name), CausalAlgorithm)
+
+
+# ============================================================
+# Parameter contracts
+# ============================================================
+
+
+@pytest.mark.parametrize("algo_key", AVAILABLE)
+def test_common_parameters_are_accepted_by_every_algorithm(algo_key, data):
+    """Every wrapper must accept alpha, n_jobs, verbose, and show_progress."""
+    algo = create_standalone_algorithm(algo_key, **_common_algorithm_kwargs(algo_key))
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        result = algo.run(data)
+    assert result is not None
+
+
+@pytest.mark.parametrize("algo_key", AVAILABLE)
+def test_result_is_convertible_to_an_endpoint_matrix(algo_key, data):
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        result = create_standalone_algorithm(
+            algo_key, **_common_algorithm_kwargs(algo_key)
+        ).run(data)
+    graph = result if hasattr(result, "get_graph_edges") else result.G
+    m = get_adj_matrix(graph)
+    assert m.shape == (data.shape[1], data.shape[1])
+    assert np.all(np.diag(m) == NULL)
+
+
+@pytest.mark.parametrize("algo_key", AVAILABLE)
+def test_every_result_uses_the_library_encoding(algo_key, data):
+    """All algorithms use one endpoint encoding: only 0, -1, 1, and 2 are valid."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        result = create_standalone_algorithm(
+            algo_key, **_common_algorithm_kwargs(algo_key)
+        ).run(data)
+    graph = result if hasattr(result, "get_graph_edges") else result.G
+    values = {int(v) for v in get_adj_matrix(graph).ravel()}
+    assert values <= {NULL, TAIL, ARROW, CIRCLE}, (
+        f"{algo_key}: unexpected codes in {values}"
+    )
+
+
+@pytest.mark.parametrize(
+    ("indep_test", "expected_type"),
+    [
+        ("fisherz", "continuous"),
+        ("chisq", "discrete"),
+    ],
+)
+def test_daggnn_common_parameters_are_not_forwarded_to_runner(
+    monkeypatch,
+    data,
+    indep_test,
+    expected_type,
+):
+    """Shared wrapper parameters must not leak into the runner's keyword arguments."""
+    received = {}
+
+    def fake_train_dag_gnn(
+        values,
+        *,
+        data_type,
+        epochs,
+        batch_size,
+        lr,
+        graph_threshold,
+        encoder_hidden,
+        decoder_hidden,
+        k_max_iter=100,
+    ):
+        received.update(
+            {
+                "data_type": data_type,
+                "epochs": epochs,
+                "batch_size": batch_size,
+                "lr": lr,
+                "graph_threshold": graph_threshold,
+                "encoder_hidden": encoder_hidden,
+                "decoder_hidden": decoder_hidden,
+                "k_max_iter": k_max_iter,
+            }
+        )
+        return np.zeros((values.shape[1], values.shape[1]))
+
+    monkeypatch.setattr(wrappers_module, "DAG_GNN_IMPORT_ERROR", None)
+    monkeypatch.setattr(
+        wrappers_module,
+        "dagnn_runner",
+        SimpleNamespace(train_dag_gnn=fake_train_dag_gnn),
+    )
+
+    algo = wrappers_module.DagGNN(
+        indep_test=indep_test,
+        alpha=0.05,
+        n_jobs=2,
+        verbose=True,
+        show_progress=True,
+        k_max_iter=1,
+    )
+    graph = algo.run(data)
+
+    assert received["k_max_iter"] == 1
+    assert received["data_type"] == expected_type
+    assert graph.get_graph_edges() == []
+
+
+def test_daggnn_rejects_unknown_runner_parameter(monkeypatch):
+    monkeypatch.setattr(wrappers_module, "DAG_GNN_IMPORT_ERROR", None)
+    with pytest.raises(TypeError, match="Unsupported DagGNN parameters: typo"):
+        wrappers_module.DagGNN(typo=True)
+
+
+def test_pag_wrappers_declare_their_output_encoding():
+    """Each class must declare its encoding explicitly to avoid accidental inheritance."""
+    from whydra.algorithms.wrappers import _PagMatrixResult
+
+    for name in AVAILABLE:
+        algo = create_standalone_algorithm(name)
+        if isinstance(algo, _PagMatrixResult):
+            assert algo.OUTPUT_ENCODING is MatrixEncoding.STANDARD, name
+
+
+def test_matrix_result_wrapper_rejects_an_undeclared_encoding():
+    from whydra.algorithms.wrappers import _PagMatrixResult
+
+    class Broken(_PagMatrixResult):
+        OUTPUT_ENCODING = None
+
+    with pytest.raises(NotImplementedError, match="OUTPUT_ENCODING"):
+        Broken()._matrix_to_graph(np.zeros((2, 2), dtype=int), 2)
+
+
+# ============================================================
+# Data loading
+# ============================================================
+
+
+@pytest.mark.parametrize(
+    ("first_line", "expected"),
+    [
+        ("A B C", True),
+        ("1.0 2.0 3.0", False),
+        ("1,2,3", False),
+        ("x1;x2;x3", True),
+        ("-1 0.5 1e3", False),
+    ],
+)
+def test_header_detection(tmp_path, first_line, expected):
+    f = tmp_path / "t.txt"
+    f.write_text(f"{first_line}\n1 2 3\n4 5 6\n", encoding="utf-8")
+    assert _text_table_has_header(f) is expected
+
+
+def test_headerless_file_keeps_every_observation(tmp_path):
+    """Keep the first observation when the input file has no header."""
+    f = tmp_path / "nh.txt"
+    f.write_text("1.0 2.0\n3.0 4.0\n5.0 6.0\n", encoding="utf-8")
+    a = _load_data_like_main(f)
+    assert a.shape == (3, 2)
+    assert a[0].tolist() == [1.0, 2.0]
+
+
+def test_file_with_header_drops_only_the_header(tmp_path):
+    f = tmp_path / "h.txt"
+    f.write_text("A B\n1.0 2.0\n3.0 4.0\n5.0 6.0\n", encoding="utf-8")
+    a = _load_data_like_main(f)
+    assert a.shape == (3, 2)
+    assert a[0].tolist() == [1.0, 2.0]
+
+
+def test_explicit_header_flag_overrides_detection(tmp_path):
+    f = tmp_path / "nh.txt"
+    f.write_text("1.0 2.0\n3.0 4.0\n5.0 6.0\n", encoding="utf-8")
+    assert _load_data_like_main(f, header=True).shape == (2, 2)
+    assert _load_data_like_main(f, header=False).shape == (3, 2)
+
+
+def test_npy_roundtrip(tmp_path):
+    f = tmp_path / "d.npy"
+    arr = np.arange(6, dtype=float).reshape(3, 2)
+    np.save(f, arr)
+    assert np.array_equal(_load_data_like_main(f), arr)
+
+
+def test_array_is_passed_through_unchanged():
+    arr = np.zeros((3, 2))
+    assert _load_data_like_main(arr) is arr
+
+
+def test_missing_file_and_wrong_type_are_reported():
+    with pytest.raises(FileNotFoundError):
+        _load_data_like_main("no-such-file.txt")
+    with pytest.raises(TypeError, match=r"must be np.ndarray"):
+        _load_data_like_main(42)
+
+
+def test_pickle_must_contain_an_array(tmp_path):
+    import pickle
+
+    f = tmp_path / "bad.pkl"
+    f.write_bytes(pickle.dumps({"not": "an array"}))
+    with pytest.raises(ValueError, match=r"does not contain np.ndarray"):
+        _load_data_like_main(f, trusted_pickle=True)
+
+
+def test_run_standalone_algorithm_from_a_file(tmp_path, data):
+    f = tmp_path / "d.npy"
+    np.save(f, data)
+    graph = run_standalone_algorithm(
+        "pc_stable", f, alpha=0.05, n_jobs=1, show_progress=False
+    )
+    assert graph.get_nodes()
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "StandalonePCStable",
+        "ParallelPCStable",
+        "StandaloneFCIStable",
+        "StandaloneFCIStableCached",
+        "StandaloneRFCIStable",
+        "StandaloneRAIStable",
+    ],
+)
+def test_device_cpu_is_equivalent_to_none(name, data):
+    """device="cpu" must select the same default backend as device=None."""
+    cls = getattr(wrappers_module, name)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        none = cls(alpha=0.05, indep_test="fisherz", n_jobs=1, device=None).run(data)
+        cpu = cls(alpha=0.05, indep_test="fisherz", n_jobs=1, device="cpu").run(data)
+    assert np.array_equal(np.asarray(none.graph), np.asarray(cpu.graph))
+
+
+# ============================================================
+# Package
+# ============================================================
+
+
+def test_public_names_are_exported():
+    for name in [
+        "BackgroundKnowledge",
+        "BKPhase",
+        "MatrixEncoding",
+        "BKApplicationReport",
+        "BKEvent",
+        "BKConflictWarning",
+        "run_standalone_algorithm",
+        "BenchmarkCaseRepository",
+    ]:
+        assert hasattr(whydra, name), f"{name} is not exported"
+
+
+def test_all_is_consistent_with_the_module():
+    for name in whydra.__all__:
+        assert hasattr(whydra, name), f"__all__ lists {name}, which is missing"
+
+
+def test_loader_registry_is_populated_on_import():
+    from whydra.data import LoaderRegistry
+
+    assert set(LoaderRegistry.available()) >= {"bnlearn", "lucas", "tetrad"}
+    with pytest.raises(ValueError, match="Unknown loader"):
+        LoaderRegistry.create("does-not-exist")

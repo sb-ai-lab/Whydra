@@ -1,0 +1,101 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+causal_env/
+
+# IDEs
+.vscode/
+.idea/
+
+# Hydra outputs (logs and configs)
+outputs/
+multirun/
+.hydra/
+
+# Project Results & Profiling
+results/
+plots/
+plots/*.csv
+plots/*.png
+results/*.csv
+results/*.png
+
+# System
+.DS_Store
+Thumbs.db
+
+# data files
+/data
+/bootstrap_samples/
+/algo_results/
+/data_old/
+/input_samples/
+
+# build c libs files
+/data
+
+# build docs files
+/docs/build/
+/docs/_build/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Local synthetic/library verification harness and generated artefacts
+/local_checks/
+
+# Local experiments and generated logs
+/playground/
+*.log
+*.pyd
+*.so
+/html/
+/notebooks/
+/reports/
+
+# Tool caches and disposable test environments
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.cache/
+.tox/
+.nox/
+.ipynb_checkpoints/
+
+# Coverage and profiling output
+.coverage
+.coverage.*
+/htmlcov/
+/coverage.xml
+/coverage.json
+*.prof
+*.pstats
+
+# Local worktrees, backups and reference checkouts
+/.worktrees/
+/.local-backups/
+/.external/
+
+# Generated documentation state
+.doctrees/
+
+# In-place native compiler output (sources and fixtures remain visible)
+/whydra/algorithms/graph_core/*.o
+/whydra/algorithms/graph_core/*.obj
+/whydra/algorithms/graph_core/*.a
+/whydra/algorithms/graph_core/*.lib
+/whydra/algorithms/graph_core/*.exp
+/whydra/algorithms/graph_core/*.ilk
+/whydra/algorithms/graph_core/*.pdb
+/whydra/algorithms/graph_core/*.dll
+/whydra/algorithms/graph_core/*.dylib

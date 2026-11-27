@@ -1,0 +1,98 @@
+name: Build distributions
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build and test distributions
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Build the source archive and a portable wheel from it
+        env:
+          WHYDRA_BUILD_NATIVE: '0'
+          WHYDRA_BUILD_CUDA: '0'
+        run: |
+          python -m pip install 'build>=1,<2' twine
+          python -m build
+          python -m twine check --strict dist/*
+      - name: Check package version, wheel tag, and bundled resources
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          python - <<'PY'
+          import os
+          import tarfile
+          import zipfile
+          from pathlib import Path
+
+          version = Path("whydra/VERSION").read_text().strip()
+          tag = os.environ["RELEASE_TAG"]
+          if tag and tag != f"v{version}":
+              raise SystemExit(f"Release tag {tag} does not match package version {version}")
+
+          stem = f"whydra-{version}"
+          resources = {"whydra/VERSION"}
+          resources.update(p.as_posix() for p in Path("whydra/scmgen/scenarios").glob("*.yaml"))
+          core = Path("whydra/algorithms/graph_core")
+          resources.update(p.as_posix() for p in core.iterdir() if p.suffix in {".cu", ".cuh", ".cpp", ".hpp"})
+          notices = {"LICENSE", "THIRD_PARTY_LICENSES/README.md"}
+          notices.update(p.as_posix() for p in Path("THIRD_PARTY_LICENSES").glob("*.txt"))
+          with tarfile.open(f"dist/{stem}.tar.gz") as archive:
+              missing = {f"{stem}/{name}" for name in resources | notices} - set(archive.getnames())
+              if missing:
+                  raise SystemExit(f"Missing from source archive: {sorted(missing)}")
+          with zipfile.ZipFile(f"dist/{stem}-py3-none-any.whl") as wheel:
+              names = set(wheel.namelist())
+              license_dir = f"whydra-{version}.dist-info/licenses"
+              missing = (resources | {f"{license_dir}/{name}" for name in notices}) - names
+              binaries = sorted(name for name in names if name.endswith((".so", ".pyd", ".dll", ".dylib")))
+              if missing or binaries:
+                  raise SystemExit(f"Missing from portable wheel: {sorted(missing)}; compiled files: {binaries}")
+          PY
+      - name: Test the installed wheel outside the checkout
+        run: |
+          python -m venv "$RUNNER_TEMP/whydra-wheel"
+          py="$RUNNER_TEMP/whydra-wheel/bin/python"
+          "$py" -m pip install dist/*.whl
+          "$py" -m pip check
+          site_packages=$("$py" -I -c 'import sysconfig; print(sysconfig.get_path("purelib"))')
+          "$py" -I scripts/audit_wheel_check.py dist/*.whl "$site_packages" "$RUNNER_TEMP/wheel-audit.json"
+      - name: Run the source archive's tests against the installed release wheel
+        if: github.event_name == 'release'
+        env:
+          OPENBLAS_NUM_THREADS: '1'
+          OMP_NUM_THREADS: '1'
+          MKL_NUM_THREADS: '1'
+        run: |
+          py="$RUNNER_TEMP/whydra-wheel/bin/python"
+          wheel=(dist/*.whl)
+          "$py" -m pip install "${wheel[0]}[dev,comparison,viz]"
+          stem="whydra-$(cat whydra/VERSION)"
+          suite="$RUNNER_TEMP/whydra-release-tests"
+          mkdir "$suite"
+          tar -xzf "dist/$stem.tar.gz" -C "$suite" --strip-components=1 \
+            "$stem/tests" "$stem/pyproject.toml" "$stem/setup.py"
+          cd "$suite"
+          # Source-integrity tests read package files relative to the test directory.
+          installed=$("$py" -I -c 'import sysconfig; print(sysconfig.get_path("purelib"))')
+          ln -s "$installed/whydra" whydra
+          "$py" -I -m pytest --import-mode=importlib -q tests
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        if: github.event_name == 'release' && github.repository == 'sb-ai-lab/Whydra'
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error

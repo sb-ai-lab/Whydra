@@ -1,0 +1,88 @@
+minimum_pre_commit_version: "4.0.0"
+default_install_hook_types: [pre-commit, commit-msg, pre-push]
+default_stages: [pre-commit]
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: 3e8a8703264a2f4a69428a0aa4dcb512790b2c8c  # v6.0.0
+    hooks:
+      - id: check-yaml
+      - id: check-json
+      - id: check-toml
+      - id: check-case-conflict
+      - id: check-merge-conflict
+        args: [--assume-in-merge]
+      - id: detect-private-key
+      - id: check-added-large-files
+        args: [--enforce-all, --maxkb=1024]
+      - id: trailing-whitespace
+        args: [--markdown-linebreak-ext=md]
+        exclude: &verbatim '^THIRD_PARTY_LICENSES/'
+      - id: end-of-file-fixer
+        exclude: *verbatim
+
+  - repo: local
+    hooks:
+      - id: conventional-commit
+        name: Conventional commit message
+        entry: cz check --allow-abort --commit-msg-file
+        language: system
+        stages: [commit-msg]
+        always_run: true
+      - id: ruff-check
+        name: Ruff lint
+        entry: python -m ruff check --fix --force-exclude
+        language: system
+        types_or: [python, pyi]
+        # The source-integrity tests pin these upstream Python files byte for byte.
+        exclude: &pinned_python >-
+          (?x)^whydra/algorithms/graph_core/(_cuda|cl_convert|cuda_(chisq|fisher_z|graph_batch|jit|pdsep|rai|udag2pag)|
+          fisher_z_schur_chol|meek_(numpy|torch))\.py$
+      - id: ruff-format
+        name: Ruff format
+        entry: python -m ruff format --force-exclude
+        language: system
+        types_or: [python, pyi]
+        exclude: *pinned_python
+      - id: clang-format
+        name: Format changed C++ and CUDA lines
+        entry: git -c core.quotePath=false -c diff.noprefix=false clang-format --staged --quiet --style=file --binary=clang-format --extensions=c,cc,cpp,cxx,h,hh,hpp,hxx,cu,cuh HEAD --
+        language: system
+        files: &native_files '(?i)\.(c|cc|cpp|cxx|h|hh|hpp|hxx|cu|cuh)$'
+        require_serial: true
+      - id: clang-format-check
+        name: Check C++ and CUDA file formatting
+        entry: clang-format --style=file --dry-run --Werror --
+        language: system
+        files: *native_files
+        stages: [pre-push]
+      - id: clang-tidy
+        name: Analyze C++ and CUDA with clang-tidy
+        entry: python scripts/check_native.py --
+        language: system
+        files: *native_files
+        require_serial: true
+      - id: basedpyright
+        name: basedpyright
+        entry: python -m basedpyright --warnings
+        language: system
+        files: '^(whydra/.*\.pyi?|pyproject\.toml)$'
+        pass_filenames: false
+      - id: mypy
+        name: Mypy
+        entry: python -m mypy
+        language: system
+        pass_filenames: false
+        always_run: true
+      - id: no-playground
+        name: Keep playground out of the library
+        entry: Keep playground files outside the library.
+        language: fail
+        files: '(?i)^playground(?:/|$)'
+      - id: tests
+        name: Library tests
+        entry: python -m pytest
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]

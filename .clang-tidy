@@ -1,0 +1,11 @@
+Checks: >-
+  -*,
+  clang-analyzer-core.*,
+  clang-analyzer-cplusplus.*,
+  bugprone-use-after-move,
+  bugprone-sizeof-expression,
+  bugprone-suspicious-memset-usage,
+  bugprone-incorrect-roundings,
+  bugprone-integer-division
+WarningsAsErrors: '*'
+HeaderFilterRegex: '.*'

@@ -1,0 +1,9 @@
+FROM python:3.11-slim AS builder
+WORKDIR /project
+COPY . .
+RUN python -m pip install --no-cache-dir '.[docs]'
+RUN sphinx-build -b html docs/source docs/build/html
+
+FROM nginx:alpine
+COPY --from=builder /project/docs/build/html /usr/share/nginx/html
+EXPOSE 80
